@@ -21,10 +21,10 @@ import (
 // Tenant is the authenticated caller. Fields correspond to the Python row-tuple
 // indices the persona flow actually reads.
 type Tenant struct {
-	ID     string // tuple[0]
-	Secret string // tuple[1]
-	Config string // tuple[2] — youConfig JSON (not parsed in the POC)
-	Status string // tuple[8]
+	ID     string // tenantapp.id  (tuple[0])
+	Secret string // tenantapp.secret  (tuple[1])
+	Config string // tenantapp.config — youConfig JSON (not parsed in the POC) (tuple[2])
+	Status string // tenantapp.status  (tuple[8])
 }
 
 var (
@@ -42,10 +42,12 @@ type Authenticator struct {
 }
 
 func New(db *sql.DB) (*Authenticator, error) {
-	// tenantapp column order mirrors the Python tuple: col 0 = tenant_id,
-	// col 1 = tenant_secret, col 2 = config, ... col 8 = status.
+	// Real tenantapp schema (entities/tenant_app.py): the primary key column is
+	// `id` (the tenant id), the secret column is `secret`, plus `config` and
+	// `status`. The Python code does SELECT * and reads by tuple index; we
+	// select the columns we need by name.
 	stmt, err := db.Prepare(
-		`SELECT tenant_id, tenant_secret, config, status FROM tenantapp WHERE tenant_id = ? LIMIT 1`)
+		`SELECT id, secret, config, status FROM tenantapp WHERE id = ? LIMIT 1`)
 	if err != nil {
 		return nil, err
 	}
@@ -64,13 +66,18 @@ func (a *Authenticator) Verify(ctx context.Context, username, password string) (
 	defer cancel()
 
 	var t Tenant
-	err := a.stmt.QueryRowContext(ctx, username).Scan(&t.ID, &t.Secret, &t.Config, &t.Status)
+	// config and status can be NULL for some rows; NullString avoids a scan
+	// error (which would otherwise crash auth for those tenants).
+	var config, status sql.NullString
+	err := a.stmt.QueryRowContext(ctx, username).Scan(&t.ID, &t.Secret, &config, &status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUnauthorized // Python: tenant_app_entity is None
 	}
 	if err != nil {
 		return nil, err // DB error — Python returns the Exception; caller maps to 500.
 	}
+	t.Config = config.String
+	t.Status = status.String
 
 	if t.Status == "INACTIVE" {
 		return nil, ErrUnauthorized
