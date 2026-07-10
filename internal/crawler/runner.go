@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"sync"
+	"time"
 )
 
 // errTimedOut is reported for a crawler that didn't finish before the shared
@@ -44,8 +45,9 @@ func (r *Runner) Run(ctx context.Context, kind Kind, identifier string) []Result
 		go func(c Crawler) {
 			defer wg.Done()
 
+			started := time.Now()
 			exist, err := c.Check(ctx, identifier, r.proxyURL)
-			res := Result{Website: c.Website()}
+			res := Result{Website: c.Website(), Duration: time.Since(started)}
 			if err != nil {
 				// Distinguish "we ran out of time" from a crawler-specific
 				// failure so partial responses read clearly. A single crawler's

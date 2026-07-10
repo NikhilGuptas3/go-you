@@ -28,6 +28,9 @@ type Result struct {
 	Website   string
 	UserExist *bool
 	Err       error
+	// Duration is how long this crawler's Check took — used for per-stage
+	// latency reporting.
+	Duration time.Duration
 }
 
 // Crawler is the Go equivalent of the ApiSpider template method: given an

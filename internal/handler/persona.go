@@ -63,12 +63,16 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 		metrics.APIStatus.WithLabelValues(route, tenantID, strconv.Itoa(status)).Inc()
 	}()
 
+	tm := newTimings()
+
+	decodeStart := time.Now()
 	var req model.PersonaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		status = http.StatusBadRequest
 		writeError(w, status, requestID, "Invalid request body")
 		return
 	}
+	tm.since("decode", decodeStart)
 	if req.Phone == nil && req.Email == "" {
 		status = http.StatusBadRequest
 		writeError(w, status, requestID, "phone or email required")
@@ -90,33 +94,39 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// Phone branch and email branch run concurrently; within each, the crawler
 	// fan-out and the meta lookup run concurrently too — matching Python's
 	// per-branch parallel sub-tasks.
+	fanoutStart := time.Now()
 	var wg sync.WaitGroup
 	if req.Phone != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp.PhoneData = h.buildPhoneSection(ctx, req.Phone)
+			resp.PhoneData = h.buildPhoneSection(ctx, req.Phone, tm)
 		}()
 	}
 	if req.Email != "" {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp.EmailData = h.buildEmailSection(ctx, req.Email)
+			resp.EmailData = h.buildEmailSection(ctx, req.Email, tm)
 		}()
 	}
 	wg.Wait()
+	tm.since("fanout_total", fanoutStart)
 
 	resp.StatusCode = 200
 	resp.Status = statusOK
 
+	tm.since("total", start)
+	resp.Timings = tm.asMap()
+
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Server-Timing", tm.serverTimingHeader())
 	w.Header().Set("you_time", fmt.Sprintf("%f", time.Since(start).Seconds()))
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // buildPhoneSection runs the phone crawlers and phone meta concurrently.
-func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone) *model.Section {
+func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm *timings) *model.Section {
 	identifier := normalizePhone(phone.CountryCode, phone.Number)
 
 	var (
@@ -131,7 +141,9 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone) *mo
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
+			metaStart := time.Now()
 			m, err := h.meta.FetchPhone(ctx, identifier)
+			tm.since("meta_phone", metaStart)
 			if err == nil {
 				phoneMeta = m
 			}
@@ -139,6 +151,7 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone) *mo
 	}
 	inner.Wait()
 
+	recordCrawlerTimings(tm, results)
 	sec := buildSection("phone", phone.Number, results)
 	if phoneMeta != nil {
 		sec.PrimaryData.PhoneMeta = phoneMeta
@@ -147,7 +160,7 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone) *mo
 }
 
 // buildEmailSection runs the email crawlers and email meta concurrently.
-func (h *Persona) buildEmailSection(ctx context.Context, email string) *model.Section {
+func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timings) *model.Section {
 	var (
 		results   []crawler.Result
 		emailMeta *meta.EmailMeta
@@ -160,7 +173,9 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string) *model.Se
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
+			metaStart := time.Now()
 			m, err := h.meta.FetchEmail(ctx, email)
+			tm.since("meta_email", metaStart)
 			if err == nil {
 				emailMeta = m
 			}
@@ -168,11 +183,19 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string) *model.Se
 	}
 	inner.Wait()
 
+	recordCrawlerTimings(tm, results)
 	sec := buildSection("email", email, results)
 	if emailMeta != nil {
 		sec.PrimaryData.EmailMeta = emailMeta
 	}
 	return sec
+}
+
+// recordCrawlerTimings logs each crawler's measured duration under crawl_<SITE>.
+func recordCrawlerTimings(tm *timings, results []crawler.Result) {
+	for _, res := range results {
+		tm.record("crawl_"+res.Website, res.Duration)
+	}
 }
 
 // normalizePhone returns the international form "+<cc><number>" the phone

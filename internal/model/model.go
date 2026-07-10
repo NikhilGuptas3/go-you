@@ -60,6 +60,9 @@ type PersonaResponse struct {
 	EmailData  *Section `json:"email_data,omitempty"`
 	StatusCode int      `json:"status_code"`
 	Status     string   `json:"status"`
+	// Timings holds per-stage latency in milliseconds (POC observability; also
+	// emitted as the Server-Timing header). Omitted when timing is off.
+	Timings map[string]float64 `json:"_timings_ms,omitempty"`
 }
 
 // ErrorResponse matches the Python error_*_handler output.
