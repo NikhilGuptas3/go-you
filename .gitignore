@@ -1,0 +1,18 @@
+# Binaries
+/go-you
+/server
+*.exe
+*.out
+
+# Local env / secrets — never commit
+.env
+*-secret.yaml
+*secret*.yaml
+
+# OS / editor
+.DS_Store
+.idea/
+*.swp
+
+# Go
+vendor/

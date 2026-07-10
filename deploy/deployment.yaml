@@ -1,0 +1,80 @@
+# go-you POC deployment — runs side-by-side with the Python `you` service in the
+# same dev namespace. ClusterIP only, no ingress: reachable in-cluster as
+# http://go-you:5000. Test via port-forward or an in-cluster curl pod, then
+# add an ingress switch once parity is proven.
+#
+# Secrets (MYSQL_DSN, REDIS_ADDR, REDIS_PASSWORD) come from an existing k8s
+# Secret — NOT from the committed engine/config.json. Create it with:
+#   kubectl create secret generic go-you-secrets \
+#     --from-literal=MYSQL_DSN='user:pass@tcp(host:3306)/user?parseTime=true' \
+#     --from-literal=REDIS_ADDR='host:6379' \
+#     --from-literal=REDIS_PASSWORD='...'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-you
+  labels:
+    app: go-you
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-you
+  template:
+    metadata:
+      labels:
+        app: go-you
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "5000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: go-you
+          image: 390403892071.dkr.ecr.ap-south-1.amazonaws.com/you/prod:go-you-poc
+          ports:
+            - containerPort: 5000
+          env:
+            - name: PORT
+              value: "5000"
+            # 5s: Instagram-via-residential-proxy needs more than the old 2s.
+            - name: CRAWLER_HTTP_TIMEOUT_MS
+              value: "5000"
+          # MYSQL_DSN and PROXY_URL come from the secret.
+          envFrom:
+            - secretRef:
+                name: go-you-secrets
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-you
+  labels:
+    app: go-you
+spec:
+  type: ClusterIP
+  selector:
+    app: go-you
+  ports:
+    - port: 5000
+      targetPort: 5000
+      protocol: TCP
