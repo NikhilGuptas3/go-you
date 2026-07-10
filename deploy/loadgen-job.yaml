@@ -1,0 +1,49 @@
+# In-cluster load generator for go-you. Runs the /loadgen binary from the same
+# image, firing sustained POST /v1/persona traffic at the ClusterIP service so
+# Grafana can plot api_latency under load.
+#
+# Real endpoints, LOW concurrency (5) to avoid proxy/Instagram rate limits.
+# Set image to the same tag you deployed for the server.
+#
+# Run:    kubectl apply -n go-you-poc -f deploy/loadgen-job.yaml
+# Watch:  kubectl logs -n go-you-poc -f job/go-you-loadgen
+# Rerun:  kubectl delete job go-you-loadgen -n go-you-poc  (then apply again)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: go-you-loadgen
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: loadgen
+          image: 390403892071.dkr.ecr.ap-south-1.amazonaws.com/you/prod:go-you-poc
+          command: ["/loadgen"]
+          env:
+            - name: TARGET_URL
+              value: "http://go-you.go-you-poc.svc.cluster.local/v1/persona"
+            - name: CONCURRENCY
+              value: "5"        # keep low: real external endpoints + proxy
+            - name: DURATION
+              value: "120s"     # 2 min of steady load = a readable Grafana window
+            # Basic-auth tenant creds (real mode). Pull from the secret so they
+            # aren't inline here.
+            - name: AUTH_USER
+              valueFrom:
+                secretKeyRef:
+                  name: go-you-loadgen-auth
+                  key: AUTH_USER
+            - name: AUTH_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: go-you-loadgen-auth
+                  key: AUTH_PASS
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 64Mi
