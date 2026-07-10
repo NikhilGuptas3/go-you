@@ -1,0 +1,18 @@
+# Values for the go-you POC on the prod cluster (namespace-segregated, port-forward only).
+replicaCount: 1
+
+image:
+  repository: 390403892071.dkr.ecr.ap-south-1.amazonaws.com/you/prod
+  tag: latest # overridden by --set image.tag=<tag> from push-goyou.sh
+  pullPolicy: IfNotPresent
+
+# Per-crawler HTTP timeout. 5s: Instagram-via-residential-proxy needs > the old 2s.
+crawlerHttpTimeoutMs: "5000"
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 500m
+    memory: 128Mi

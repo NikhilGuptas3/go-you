@@ -4,10 +4,13 @@
 *.exe
 *.out
 
-# Local env / secrets — never commit
+# Local env / secrets — never commit (but DO track secret.example.yaml)
 .env
+secret.yaml
+deploy/secret.yaml
 *-secret.yaml
-*secret*.yaml
+!secret.example.yaml
+!deploy/secret.example.yaml
 
 # OS / editor
 .DS_Store

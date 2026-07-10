@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.deploymentName }}
+  annotations:
+    prometheus.io/scrape: 'true'
+    prometheus.io/port: '5000'
+spec:
+  # ClusterIP only: no public ingress. Reach it with
+  #   kubectl port-forward -n go-you-poc svc/go-you 8080:80
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 5000
+      protocol: TCP
+      name: http
+  selector:
+    app: {{ .Values.deploymentName }}

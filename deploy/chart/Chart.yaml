@@ -1,0 +1,6 @@
+apiVersion: v2
+name: go-you
+description: Helm chart for the go-you POC (Go reimplementation of /v1/persona)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
