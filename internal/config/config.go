@@ -26,6 +26,10 @@ type Config struct {
 	// proxy is enough to prove the path.
 	ProxyURL string
 
+	// IPQSToken is the IPQualityScore API token for phone/email meta. Empty =>
+	// meta lookups are skipped (phone_meta/email_meta absent from the response).
+	IPQSToken string
+
 	// Crawl behaviour
 	HTTPTimeout time.Duration // per external crawler request
 }
@@ -49,7 +53,8 @@ func Load() (*Config, error) {
 	c := &Config{
 		Port:        getEnv("PORT", "5000"),
 		MySQLDSN:    req("MYSQL_DSN"),
-		ProxyURL:    os.Getenv("PROXY_URL"), // optional; empty => crawl direct
+		ProxyURL:    os.Getenv("PROXY_URL"),  // optional; empty => crawl direct
+		IPQSToken:   os.Getenv("IPQS_TOKEN"), // optional; empty => skip meta
 		HTTPTimeout: time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
 	}
 

@@ -2,9 +2,14 @@ package crawler
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"sync"
 )
+
+// errTimedOut is reported for a crawler that didn't finish before the shared
+// request deadline, so partial responses distinguish timeout from failure.
+var errTimedOut = errors.New("timed out")
 
 // Runner fans out a set of crawlers concurrently over one identifier, the way
 // real_time_data_service.get_organic_persona does with its thread pool. Each
@@ -42,7 +47,14 @@ func (r *Runner) Run(ctx context.Context, kind Kind, identifier string) []Result
 			exist, err := c.Check(ctx, identifier, r.proxyURL)
 			res := Result{Website: c.Website()}
 			if err != nil {
-				res.Err = err
+				// Distinguish "we ran out of time" from a crawler-specific
+				// failure so partial responses read clearly. A single crawler's
+				// error never fails the batch — the others still return.
+				if ctx.Err() != nil {
+					res.Err = errTimedOut
+				} else {
+					res.Err = err
+				}
 			} else {
 				res.UserExist = &exist
 			}

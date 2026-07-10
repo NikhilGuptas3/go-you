@@ -43,8 +43,13 @@ type Section struct {
 }
 
 type PrimaryData struct {
-	AccountDetails      []AccountDetails `json:"account_details"`
-	SocialProfileCount  int              `json:"social_profile_count"`
+	AccountDetails     []AccountDetails `json:"account_details"`
+	SocialProfileCount int              `json:"social_profile_count"`
+	// PhoneMeta/EmailMeta are IPQS enrichment; only one is set per section and
+	// only when a meta lookup succeeded. Typed as any so the meta package owns
+	// the concrete shape without the model importing it.
+	PhoneMeta any `json:"phone_meta,omitempty"`
+	EmailMeta any `json:"email_meta,omitempty"`
 }
 
 // PersonaResponse is the top-level /v1/persona response. Only the fields the POC

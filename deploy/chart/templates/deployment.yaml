@@ -40,7 +40,7 @@ spec:
                 name: go-you-secrets
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: 5000
             initialDelaySeconds: 3
             periodSeconds: 10

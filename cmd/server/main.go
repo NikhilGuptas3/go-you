@@ -24,6 +24,7 @@ import (
 	"github.com/sign3labs/go-you/internal/config"
 	"github.com/sign3labs/go-you/internal/crawler"
 	"github.com/sign3labs/go-you/internal/handler"
+	"github.com/sign3labs/go-you/internal/meta"
 )
 
 func main() {
@@ -81,22 +82,41 @@ func main() {
 		crawler.NewSpotify(cfg.HTTPTimeout),    // email
 		crawler.NewFreelancer(cfg.HTTPTimeout), // email
 	)
-	personaHandler := handler.NewPersona(runner)
+
+	// --- Meta (IPQualityScore phone/email enrichment) ---
+	metaClient := meta.New(cfg.IPQSToken, cfg.HTTPTimeout)
+	if metaClient.Enabled() {
+		log.Printf("phone/email meta enabled (IPQS)")
+	} else {
+		log.Printf("phone/email meta disabled (no IPQS_TOKEN)")
+	}
+
+	personaHandler := handler.NewPersona(runner, metaClient)
 
 	// --- Router ---
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 
-	// Liveness/readiness — does not require auth.
+	// Liveness — does not require auth. Always 200 if the process is up; a
+	// transient DB blip must not kill the pod (that's readiness' job, and the
+	// persona route already handles DB errors per-request).
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	// Readiness — checks the DB with a short timeout so a slow RDS doesn't hang.
+	r.Get("/readyz", func(w http.ResponseWriter, req *http.Request) {
 		if db != nil {
-			if err := db.PingContext(context.Background()); err != nil {
-				http.Error(w, "db down", http.StatusServiceUnavailable)
+			ctx, cancel := context.WithTimeout(req.Context(), 2*time.Second)
+			defer cancel()
+			if err := db.PingContext(ctx); err != nil {
+				http.Error(w, "db not ready", http.StatusServiceUnavailable)
 				return
 			}
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ready"))
 	})
 	r.Handle("/metrics", promhttp.Handler())
 
