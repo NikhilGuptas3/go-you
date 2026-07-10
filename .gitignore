@@ -4,13 +4,10 @@
 *.exe
 *.out
 
-# Local env / secrets — never commit (but DO track secret.example.yaml)
+# Local env / secrets
+# NOTE: deploy/secret.yaml is intentionally COMMITTED for the POC (contains live
+# values). Move to a secret store and re-ignore this before any real use.
 .env
-secret.yaml
-deploy/secret.yaml
-*-secret.yaml
-!secret.example.yaml
-!deploy/secret.example.yaml
 
 # OS / editor
 .DS_Store
