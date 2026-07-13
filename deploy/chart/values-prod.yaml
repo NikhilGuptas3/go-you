@@ -10,12 +10,16 @@ image:
 crawlerHttpTimeoutMs: "5000"
 
 resources:
+  # Bumped after the 128Mi pod OOMKilled at ~9 QPS in the in-cluster loadtest
+  # (42 errors: EOF -> connection reset -> connection refused -> restart, all
+  # failing to reach go-you itself). Generous headroom so throughput/latency
+  # measurements aren't limited by the pod resources.
   requests:
-    cpu: 50m
-    memory: 32Mi
-  limits:
     cpu: 500m
-    memory: 128Mi
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
 
 # Prometheus Operator scraping. The prod cluster runs kube-prometheus-stack;
 # its Prometheus CR selects ServiceMonitors with label `release: prometheus`
