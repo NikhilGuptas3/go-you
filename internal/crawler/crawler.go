@@ -26,6 +26,7 @@ const (
 // an error channel.
 type Result struct {
 	Website   string
+	Kind      Kind
 	UserExist *bool
 	Err       error
 	// Duration is how long this crawler's Check took — used for per-stage

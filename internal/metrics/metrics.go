@@ -23,4 +23,17 @@ var (
 		Name: "api_status",
 		Help: "You Service Api Status",
 	}, []string{"api", "tenant", "status"})
+
+	// CrawlerLatency is a go-you-only per-crawler histogram. There is no Python
+	// equivalent (the Python side has no per-spider Prometheus metric), so this
+	// is for understanding go-you's internal latency profile — which crawler is
+	// the tail — NOT for Go-vs-Python comparison. Labels:
+	//   crawler = flipkart|instagram|spotify|freelancer
+	//   kind    = phone|email
+	//   status  = ok|failed|timeout
+	CrawlerLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "crawler_latency_seconds",
+		Help:    "Per-crawler call latency (go-you only)",
+		Buckets: buckets,
+	}, []string{"crawler", "kind", "status"})
 )

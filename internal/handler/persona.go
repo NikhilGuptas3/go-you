@@ -191,11 +191,29 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timin
 	return sec
 }
 
-// recordCrawlerTimings logs each crawler's measured duration under crawl_<SITE>.
+// recordCrawlerTimings logs each crawler's measured duration under crawl_<SITE>
+// for the per-request timing view, and also feeds the per-crawler Prometheus
+// histogram so Grafana can show p50/p95/p99 latency per crawler over time.
 func recordCrawlerTimings(tm *timings, results []crawler.Result) {
 	for _, res := range results {
 		tm.record("crawl_"+res.Website, res.Duration)
+		metrics.CrawlerLatency.
+			WithLabelValues(res.Website, string(res.Kind), crawlerStatus(res)).
+			Observe(res.Duration.Seconds())
 	}
+}
+
+// crawlerStatus maps a crawler Result to the histogram's status label. The
+// runner reports the shared-deadline case with the "timed out" sentinel; any
+// other error is a crawler-specific failure.
+func crawlerStatus(res crawler.Result) string {
+	if res.Err == nil {
+		return "ok"
+	}
+	if res.Err.Error() == "timed out" {
+		return "timeout"
+	}
+	return "failed"
 }
 
 // normalizePhone returns the international form "+<cc><number>" the phone

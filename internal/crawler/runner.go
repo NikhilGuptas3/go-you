@@ -47,7 +47,7 @@ func (r *Runner) Run(ctx context.Context, kind Kind, identifier string) []Result
 
 			started := time.Now()
 			exist, err := c.Check(ctx, identifier, r.proxyURL)
-			res := Result{Website: c.Website(), Duration: time.Since(started)}
+			res := Result{Website: c.Website(), Kind: c.Kind(), Duration: time.Since(started)}
 			if err != nil {
 				// Distinguish "we ran out of time" from a crawler-specific
 				// failure so partial responses read clearly. A single crawler's
