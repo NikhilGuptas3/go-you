@@ -10,13 +10,10 @@
 # are captured with `kubectl logs`. The final SUMMARY table also prints there.
 #
 # Run:
-#   kubectl apply -n go-you-poc -f deploy/loadtest-job.yaml
+#   sed 's/REPLACE_WITH_DEPLOYED_TAG/<your-tag>/' deploy/loadtest-job.yaml | kubectl apply -n go-you-poc -f -
 #   kubectl logs  -n go-you-poc -f job/go-you-loadtest | tee loadtest-evidence.txt
 # Rerun:
-#   kubectl delete job go-you-loadtest -n go-you-poc   # then apply again
-#
-# IMPORTANT: set image.tag below to the tag you just deployed (must be an image
-# built AFTER the Dockerfile change that adds /loadtest).
+#   kubectl delete job go-you-loadtest -n go-you-poc
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -28,9 +25,6 @@ spec:
       restartPolicy: Never
       containers:
         - name: loadtest
-          # Same repo/tag as the server deployment. Override with the tag you
-          # deployed: `kubectl set image` won't apply here — edit this line or
-          # use `sed` before apply.
           image: 390403892071.dkr.ecr.ap-south-1.amazonaws.com/you/prod:REPLACE_WITH_DEPLOYED_TAG
           command: ["/loadtest"]
           env:
@@ -41,11 +35,9 @@ spec:
             - name: QPS_LEVELS
               value: "1,2,5,10"
             - name: DUMP_JSONL
-              value: "true"          # echo every response to stdout (durable evidence)
+              value: "true"
             - name: REQ_TIMEOUT
               value: "30s"
-            # Basic-auth: the exact working header from the curl test. Kept in a
-            # Secret so it isn't inline. See note below to create it.
             - name: AUTH_HEADER
               valueFrom:
                 secretKeyRef:
