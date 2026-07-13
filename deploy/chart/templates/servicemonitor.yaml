@@ -1,0 +1,34 @@
+{{- if .Values.serviceMonitor.enabled }}
+# ServiceMonitor for the Prometheus Operator (kube-prometheus-stack) running in
+# the cluster's `monitoring` namespace.
+#
+# Verified against the live prod cluster (2026-07):
+#   * The Prometheus CR selects ServiceMonitors by label:
+#         serviceMonitorSelector = {matchLabels: {release: prometheus}}
+#     -> so this object MUST carry `release: prometheus` or the Operator ignores
+#        it silently (no error, empty graph).
+#   * serviceMonitorNamespaceSelector = {}  (empty) -> Prometheus watches ALL
+#     namespaces, so this ServiceMonitor can live right here in go-you-poc next
+#     to the Service. No namespace labeling required.
+#
+# spec.selector below matches the go-you Service's labels (app: go-you); the
+# endpoint targets the Service port NAME `http` (-> targetPort 5000, /metrics).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ .Values.deploymentName }}
+  labels:
+    app: {{ .Values.deploymentName }}
+    release: {{ .Values.serviceMonitor.releaseLabel }}
+spec:
+  # Empty namespaceSelector => same namespace as this ServiceMonitor.
+  namespaceSelector: {}
+  selector:
+    matchLabels:
+      app: {{ .Values.deploymentName }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
+{{- end }}

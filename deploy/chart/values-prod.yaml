@@ -16,3 +16,12 @@ resources:
   limits:
     cpu: 500m
     memory: 128Mi
+
+# Prometheus Operator scraping. The prod cluster runs kube-prometheus-stack;
+# its Prometheus CR selects ServiceMonitors with label `release: prometheus`
+# and watches all namespaces (verified 2026-07). Toggle off to disable scraping.
+serviceMonitor:
+  enabled: true
+  releaseLabel: prometheus   # MUST match the Prometheus CR's serviceMonitorSelector
+  interval: 30s
+  scrapeTimeout: 10s
