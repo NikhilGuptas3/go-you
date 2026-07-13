@@ -8,12 +8,15 @@ RUN go mod download
 COPY . .
 # CGO off => fully static binaries, runnable on distroless/scratch.
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /go-you ./cmd/server
-# loadgen ships in the same image; the load Job overrides the entrypoint to it.
+# loadgen + loadtest ship in the same image; the load Job overrides the
+# entrypoint to run them in-cluster (no port-forward bottleneck).
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /loadgen ./cmd/loadgen
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /loadtest ./cmd/loadtest
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /go-you /go-you
 COPY --from=build /loadgen /loadgen
+COPY --from=build /loadtest /loadtest
 EXPOSE 5000
 USER nonroot:nonroot
 ENTRYPOINT ["/go-you"]

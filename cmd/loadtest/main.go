@@ -56,12 +56,13 @@ func main() {
 	authHeader := buildAuth()
 	n := envInt("N", 300)
 	levels := parseLevels(env("QPS_LEVELS", "1,2,5,10"))
-	outDir := env("OUT_DIR", "./loadtest-results")
+	outDir := env("OUT_DIR", "/tmp/loadtest-results") // /tmp is writable on distroless
 	reqTimeout := envDur("REQ_TIMEOUT", 30*time.Second)
 	seed := int64(envInt("SEED", 1))
 
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		fatal("cannot create OUT_DIR: %v", err)
+		// Non-fatal: on a read-only pod we fall back to DUMP_JSONL on stdout.
+		fmt.Printf("(note: OUT_DIR %s not writable: %v)\n", outDir, err)
 	}
 
 	fmt.Printf("go-you loadtest\n")
@@ -183,16 +184,29 @@ func runLevel(client *http.Client, target, auth string, pool []struct{ phone, em
 	wg.Wait()
 	wall := time.Since(start).Seconds()
 
-	// Persist evidence: one JSON object per line.
+	// Persist evidence to a file when the filesystem is writable (local runs).
+	// In-cluster on a distroless read-only pod this may fail — that's fine, we
+	// fall back to DUMP_JSONL on stdout so `kubectl logs` still captures it.
 	path := filepath.Join(outDir, fmt.Sprintf("level-%dqps.jsonl", qps))
-	f, err := os.Create(path)
-	if err != nil {
-		fatal("cannot create %s: %v", path, err)
+	if f, err := os.Create(path); err == nil {
+		enc := json.NewEncoder(f)
+		for _, s := range samples {
+			_ = enc.Encode(s)
+		}
+		f.Close()
+	} else {
+		fmt.Printf("     (note: could not write %s: %v — relying on DUMP_JSONL/stdout)\n", path, err)
 	}
-	defer f.Close()
-	enc := json.NewEncoder(f)
-	for _, s := range samples {
-		_ = enc.Encode(s)
+
+	// When DUMP_JSONL=true, echo every record to stdout so evidence survives in
+	// the pod logs (the only durable output for an ephemeral Job pod).
+	if os.Getenv("DUMP_JSONL") == "true" {
+		fmt.Printf("<<<BEGIN level-%dqps.jsonl>>>\n", qps)
+		enc := json.NewEncoder(os.Stdout)
+		for _, s := range samples {
+			_ = enc.Encode(s)
+		}
+		fmt.Printf("<<<END level-%dqps.jsonl>>>\n", qps)
 	}
 
 	return runResult{samples: samples, wall: wall}

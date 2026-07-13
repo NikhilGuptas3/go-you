@@ -1,0 +1,60 @@
+# In-cluster QPS-laddered load test for go-you.
+#
+# Runs the /loadtest binary from the same image, hitting the ClusterIP Service
+# DIRECTLY over cluster networking — no kubectl port-forward, no SSH tunnel. The
+# earlier local run failed at 10 QPS because the port-forward tunnel collapsed
+# (~30 concurrent streams); this path has no such bottleneck, so it measures
+# go-you's real ceiling.
+#
+# Evidence: the Job is ephemeral, so results go to STDOUT (DUMP_JSONL=true) and
+# are captured with `kubectl logs`. The final SUMMARY table also prints there.
+#
+# Run:
+#   kubectl apply -n go-you-poc -f deploy/loadtest-job.yaml
+#   kubectl logs  -n go-you-poc -f job/go-you-loadtest | tee loadtest-evidence.txt
+# Rerun:
+#   kubectl delete job go-you-loadtest -n go-you-poc   # then apply again
+#
+# IMPORTANT: set image.tag below to the tag you just deployed (must be an image
+# built AFTER the Dockerfile change that adds /loadtest).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: go-you-loadtest
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: loadtest
+          # Same repo/tag as the server deployment. Override with the tag you
+          # deployed: `kubectl set image` won't apply here — edit this line or
+          # use `sed` before apply.
+          image: 390403892071.dkr.ecr.ap-south-1.amazonaws.com/you/prod:REPLACE_WITH_DEPLOYED_TAG
+          command: ["/loadtest"]
+          env:
+            - name: TARGET_URL
+              value: "http://go-you.go-you-poc.svc.cluster.local/v1/persona"
+            - name: N
+              value: "300"
+            - name: QPS_LEVELS
+              value: "1,2,5,10"
+            - name: DUMP_JSONL
+              value: "true"          # echo every response to stdout (durable evidence)
+            - name: REQ_TIMEOUT
+              value: "30s"
+            # Basic-auth: the exact working header from the curl test. Kept in a
+            # Secret so it isn't inline. See note below to create it.
+            - name: AUTH_HEADER
+              valueFrom:
+                secretKeyRef:
+                  name: go-you-loadtest-auth
+                  key: AUTH_HEADER
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 128Mi
