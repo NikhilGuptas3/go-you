@@ -106,6 +106,43 @@ func TestCleanupPrediction(t *testing.T) {
 	}
 }
 
+// TestCleanupPredictionRenamesScoreKey covers the real-config case: the tenant
+// sets common_intelligence.score.onboarding_fraud_detection.output_key_name, and
+// cleanup_prediction must rename intelligence_data.score.onboarding_fraud_detection
+// to that key (response_mapper.py:264-269) AND use it in the prediction reshape.
+func TestCleanupPredictionRenamesScoreKey(t *testing.T) {
+	cfg := `{"youConfig":{"prediction":true,"common_intelligence":{
+		"enabled":true,
+		"score":{"enabled":true,"onboarding_fraud_detection":{"enabled":true,"output_key_name":"onboarding_phone_risk_score"}}
+	}}}`
+	yc, err := appconfig.ParseYouConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]any{
+		"intelligence_data": map[string]any{
+			"score": map[string]any{
+				"onboarding_fraud_detection": map[string]any{"value": 0.488, "min_value": 0, "max_value": 1},
+			},
+		},
+		"prediction": map[string]any{"predicted_score": 0.104},
+	}
+	cleanupPrediction(out, yc)
+
+	score := out["intelligence_data"].(map[string]any)["score"].(map[string]any)
+	if _, stale := score["onboarding_fraud_detection"]; stale {
+		t.Error("onboarding_fraud_detection should be renamed away")
+	}
+	renamed, ok := score["onboarding_phone_risk_score"].(map[string]any)
+	if !ok || renamed["value"] != 0.488 {
+		t.Errorf("expected renamed score with value 0.488, got %v", score)
+	}
+	pred := out["prediction"].(map[string]any)
+	if pred["onboarding_phone_risk_score"] != 0.104 {
+		t.Errorf("prediction should use output_key_name: %v", pred)
+	}
+}
+
 func TestCleanupMetaGotcha(t *testing.T) {
 	mk := func() map[string]any {
 		return map[string]any{

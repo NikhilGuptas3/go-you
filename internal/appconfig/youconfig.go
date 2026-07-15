@@ -38,10 +38,22 @@ type YouConfiguration struct {
 
 // WebsiteEntry is one entry of youConfig.websites (config_service.py:46-50).
 // A site is enabled for a type iff Enabled && the per-type flag is true.
+//
+// The per-type flags (phone_enabled/email_enabled) and client_response are
+// POINTERS so we can distinguish "absent" from "explicitly false". Python reads
+// the fully-merged tenant config (data/dao/config_utils.py:merge_and_delta
+// overlays the tenant youConfig onto the init_root_config defaults at onboard
+// time and stores the whole thing), so in the DB every site carries these keys.
+// A tenant that sends only {"enabled": true} — the exposed "delta" view — relies
+// on the root defaults being merged in. go-you replicates those defaults here so
+// it behaves correctly whether it reads the merged config OR a bare delta: an
+// absent per-type flag defaults to the root value (phone_enabled=true,
+// email_enabled=true, client_response=true for every crawler-backed site; the
+// deviating sites LINKEDIN/WHATSAPP/UPI are all token-pool and never crawled).
 type WebsiteEntry struct {
-	Enabled      bool `json:"enabled"`
-	PhoneEnabled bool `json:"phone_enabled"`
-	EmailEnabled bool `json:"email_enabled"`
+	Enabled      bool  `json:"enabled"`
+	PhoneEnabled *bool `json:"phone_enabled"`
+	EmailEnabled *bool `json:"email_enabled"`
 	// ClientResponse controls whether the site appears in the client response
 	// (transform: remove_client_response_disabled_websites). Defaults to true
 	// when the key is absent; use ClientResponse(site) to read with that default.
@@ -77,6 +89,13 @@ func ParseYouConfig(tenantConfigJSON string) (*YouConfiguration, error) {
 // IsWebsiteEnabled mirrors config_service.is_website_enabled: the site exists in
 // websites, Enabled is true, and the per-type flag is true. kind is "phone" or
 // "email".
+//
+// Python reads a fully-merged config where phone_enabled/email_enabled always
+// exist (root default = true for crawler-backed sites). go-you replicates that:
+// an ABSENT per-type flag defaults to true, so a tenant delta of just
+// {"enabled": true} enables the site for both types — exactly as the merged
+// config would. Only an explicit "phone_enabled": false / "email_enabled": false
+// disables that type.
 func (yc *YouConfiguration) IsWebsiteEnabled(website, kind string) bool {
 	e, ok := yc.Websites[website]
 	if !ok || !e.Enabled {
@@ -84,9 +103,9 @@ func (yc *YouConfiguration) IsWebsiteEnabled(website, kind string) bool {
 	}
 	switch kind {
 	case "phone":
-		return e.PhoneEnabled
+		return e.PhoneEnabled == nil || *e.PhoneEnabled
 	case "email":
-		return e.EmailEnabled
+		return e.EmailEnabled == nil || *e.EmailEnabled
 	default:
 		return false
 	}
@@ -151,6 +170,37 @@ func (yc *YouConfiguration) IsDomainIntelligenceEnabled() bool {
 // IsCommonIntelligenceEnabled reports common_intelligence.enabled == true.
 func (yc *YouConfiguration) IsCommonIntelligenceEnabled() bool {
 	return boolAt(yc.CommonIntelligence, "enabled")
+}
+
+// OnboardingFraudOutputKey returns the tenant's configured output_key_name for
+// the onboarding_fraud_detection score, and whether the score-rename should run.
+// Mirrors response_mapper.cleanup_prediction (response_mapper.py:259-275):
+// rename runs only when common_intelligence.enabled AND score.enabled AND
+// score.onboarding_fraud_detection.enabled are all true. The returned key
+// applies both to the intelligence_data.score rename and to the prediction
+// reshape; it defaults to "identity_fraud_score" (and "identity_fraud" is
+// normalized to "identity_fraud_score").
+func (yc *YouConfiguration) OnboardingFraudOutputKey() (key string, renameEnabled bool) {
+	key = "identity_fraud_score"
+	ci := yc.CommonIntelligence
+	if !boolAt(ci, "enabled") {
+		return key, false
+	}
+	score, ok := ci["score"].(map[string]any)
+	if !ok || !boolAt(score, "enabled") {
+		return key, false
+	}
+	ofd, ok := score["onboarding_fraud_detection"].(map[string]any)
+	if !ok || !boolAt(ofd, "enabled") {
+		return key, false
+	}
+	if name, ok := ofd["output_key_name"].(string); ok && name != "" {
+		if name == "identity_fraud" {
+			name = "identity_fraud_score"
+		}
+		key = name
+	}
+	return key, true
 }
 
 // RequestTimeoutFor mirrors config_service.get_request_timeout: pick the

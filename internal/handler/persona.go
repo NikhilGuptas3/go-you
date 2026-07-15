@@ -192,16 +192,30 @@ func (h *Persona) resolveConfig(tenant *auth.Tenant) (yc *appconfig.YouConfigura
 }
 
 // phoneMetaOn reports whether the phone_meta lane should run for this tenant.
-// nil youConfig (fallback) => on, so LOCAL_DEV still exercises meta.
-func phoneMetaOn(yc *appconfig.YouConfiguration) bool { return yc == nil || yc.PhoneMeta }
+//
+// Python fetches phone_meta UNCONDITIONALLY: YouServicePhone.get_user_persona
+// always submits get_phone_intelligence and map_response always attaches
+// phone_meta (you_service_phone.py:32,82). The top-level youConfig "phone_meta"
+// flag only drives analytics events (request_context_service.py:18) and is not
+// even present in the root config, so it must never suppress the meta output.
+// The real per-feature gates live deeper (postpaid via is_postpaid_enabled). So
+// phone_meta always runs here.
+func phoneMetaOn(yc *appconfig.YouConfiguration) bool { return true }
 
-// emailMetaOn reports whether the email_meta (domain intelligence) lane runs.
-// Python gates it behind BOTH email_meta AND is_domain_intelligence_enabled.
+// emailMetaOn reports whether the email_meta lane runs.
+//
+// Python also fetches email_meta UNCONDITIONALLY (you_service_email.py:92 always
+// submits get_email_intelligence). Inside that lane, the domain-intelligence
+// fetch — WHOIS / is_disposable / SPF-DMARC-MX / website, which is ALL that
+// go-you's EmailMetaService produces — is the part gated by
+// is_domain_intelligence_enabled (email_info_service.py:46). So go-you runs the
+// lane exactly when domain intelligence is enabled; the (nonexistent) top-level
+// email_meta flag is NOT part of the gate. nil youConfig (LOCAL_DEV) => on.
 func emailMetaOn(yc *appconfig.YouConfiguration) bool {
 	if yc == nil {
 		return true
 	}
-	return yc.EmailMeta && yc.IsDomainIntelligenceEnabled()
+	return yc.IsDomainIntelligenceEnabled()
 }
 
 // postpaidOn reports whether the postpaid sub-lane runs (nil => on).
@@ -236,19 +250,27 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm 
 			national := nationalFromIdentifier(identifier)
 			r := h.phoneMeta.Fetch(ctx, national, identifier, postpaidOn(yc))
 			tm.since("meta_phone", metaStart)
+			revocations := r.Revocations
+			if revocations == nil {
+				// Prod keeps "revocations": {} (clean_empty preserves empty
+				// dicts); never emit null.
+				revocations = map[string]any{}
+			}
 			phoneMeta = &model.PhoneMeta{
 				PhoneNumber: identifier,
 				Operator:    r.Operator,
 				Circle:      r.Circle,
 				Postpaid:    r.Postpaid,
-				Revocations: r.Revocations,
+				Revocations: revocations,
 			}
 		}()
 	}
 	inner.Wait()
 
 	recordCrawlerTimings(tm, results)
-	sec := buildSection("phone", phone.Number, results)
+	// Section key is the international number (prod: phone_data.primary_data.key
+	// = login_id.international_number, e.g. "+917667701982").
+	sec := buildSection("phone", identifier, results)
 	if phoneMeta != nil {
 		sec.PrimaryData.PhoneMeta = phoneMeta
 	}

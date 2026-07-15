@@ -79,34 +79,46 @@ type PrimaryData struct {
 // OperatorFreecharge, postpaid from the Airtel/Jio/VI lane, revocations from the
 // Outris TPI lane. dnd_status is always null (EasyGoSms is token-pool → OUT).
 // revocations_analytics is never produced (stripped from the client anyway).
+// All the always-null fields (IPQS valid/active/country/associated_*, dnd_status)
+// carry omitempty so they are dropped exactly as Python's clean_empty drops the
+// None values it produces for the same fields. Prod phone_meta is precisely
+// {phone_number, operator, postpaid, circle, revocations}; go-you matches that
+// by never emitting the disabled-source keys. revocations is NOT omitempty
+// because prod keeps the empty {} (clean_empty preserves empty dicts).
 type PhoneMeta struct {
 	PhoneNumber              string `json:"phone_number,omitempty"`
-	Valid                    *bool  `json:"valid"`
-	Active                   *bool  `json:"active"`
-	Country                  string `json:"country"`
-	AssociatedEmailAddresses string `json:"associated_email_addresses"`
-	AssociatedNames          string `json:"associated_names"`
+	Valid                    *bool  `json:"valid,omitempty"`
+	Active                   *bool  `json:"active,omitempty"`
+	Country                  string `json:"country,omitempty"`
+	AssociatedEmailAddresses string `json:"associated_email_addresses,omitempty"`
+	AssociatedNames          string `json:"associated_names,omitempty"`
 	Operator                 string `json:"operator,omitempty"`
 	Postpaid                 *bool  `json:"postpaid,omitempty"`
 	Circle                   string `json:"circle,omitempty"`
 	// Revocations is {total_revocations, year, month} when the Outris TPI lane is
-	// enabled and returns data; empty object otherwise.
-	Revocations map[string]any `json:"revocations,omitempty"`
-	DndStatus   *bool          `json:"dnd_status"`
+	// enabled and returns data; empty object otherwise. Kept even when empty to
+	// match prod (clean_empty preserves {}).
+	Revocations map[string]any `json:"revocations"`
+	DndStatus   *bool          `json:"dnd_status,omitempty"`
 }
 
 // EmailMeta mirrors the Python email_meta dict (service/models/
 // email_intelligence_data.py). IPQS fields and OpenAI name_from_email are always
 // null (prod-disabled / dead). is_disposable + domain_attributes come from the
 // domain-intelligence V2 lane.
+// Prod email_meta is precisely {is_disposable, domain_attributes} — every other
+// field is IPQS/OpenAI-derived, always None in go-you, and dropped by
+// clean_empty. omitempty on all of them reproduces that. NOTE is_disposable
+// carries omitempty too: it is a *bool, so a genuine false still serializes
+// (only nil is dropped), matching Python keeping the boolean but dropping None.
 type EmailMeta struct {
-	Email                  string            `json:"email"`
-	IsValid                *bool             `json:"is_valid"`
+	Email                  string            `json:"email,omitempty"`
+	IsValid                *bool             `json:"is_valid,omitempty"`
 	IsDisposable           *bool             `json:"is_disposable,omitempty"`
-	AssociatedNames        string            `json:"associated_names"`
-	AssociatedPhoneNumbers string            `json:"associated_phone_numbers"`
-	NamePredictedFromEmail string            `json:"name_predicted_from_email"`
-	NameFromEmail          string            `json:"name_from_email"`
+	AssociatedNames        string            `json:"associated_names,omitempty"`
+	AssociatedPhoneNumbers string            `json:"associated_phone_numbers,omitempty"`
+	NamePredictedFromEmail string            `json:"name_predicted_from_email,omitempty"`
+	NameFromEmail          string            `json:"name_from_email,omitempty"`
 	DomainAttributes       *DomainAttributes `json:"domain_attributes,omitempty"`
 }
 
@@ -140,18 +152,22 @@ type BreachDetails struct {
 	BreachesStatus   string   `json:"breaches_status"`
 }
 
-// Breach is one HIBP breach entry (data_breach/breach_detail.py:21).
+// Breach is one HIBP breach entry (data_breach/breach_crawler.py:210-231). The
+// parser lowercases only the KEY "Name" (value keeps original case), keeps the
+// PascalCase keys PwnCount/DataClasses/Is*, renames BreachDate->date, and adds a
+// comma-joined "data" string derived from DataClasses. Field order matches prod.
 type Breach struct {
-	Name         string `json:"name"`
-	Date         string `json:"date,omitempty"`
-	Data         string `json:"data,omitempty"`
-	PwnCount     int    `json:"PwnCount,omitempty"`
-	IsVerified   bool   `json:"IsVerified"`
-	IsFabricated bool   `json:"IsFabricated"`
-	IsSensitive  bool   `json:"IsSensitive"`
-	IsRetired    bool   `json:"IsRetired"`
-	IsSpamList   bool   `json:"IsSpamList"`
-	IsMalware    bool   `json:"IsMalware"`
+	Name         string   `json:"name"`
+	PwnCount     int      `json:"PwnCount,omitempty"`
+	DataClasses  []string `json:"DataClasses,omitempty"`
+	IsVerified   bool     `json:"IsVerified"`
+	IsFabricated bool     `json:"IsFabricated"`
+	IsSensitive  bool     `json:"IsSensitive"`
+	IsRetired    bool     `json:"IsRetired"`
+	IsSpamList   bool     `json:"IsSpamList"`
+	IsMalware    bool     `json:"IsMalware"`
+	Data         string   `json:"data,omitempty"`
+	Date         string   `json:"date,omitempty"`
 }
 
 // IntelligenceData is both the per-section rebuilt allow-list (remove_

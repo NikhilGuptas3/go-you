@@ -15,6 +15,7 @@ const sampleTenantConfig = `{
       "INSTAGRAM": {"enabled": true,  "phone_enabled": true,  "email_enabled": false},
       "SPOTIFY":   {"enabled": true,  "phone_enabled": false, "email_enabled": true},
       "AMAZON":    {"enabled": true,  "phone_enabled": true,  "email_enabled": true, "client_response": false},
+      "BARE":      {"enabled": true},
       "DISABLED":  {"enabled": false, "phone_enabled": true,  "email_enabled": true}
     },
     "phone_info": {"enabled": true, "postpaid": true, "dnd_status": false},
@@ -90,6 +91,12 @@ func TestIsWebsiteEnabled(t *testing.T) {
 		{"INSTAGRAM", "email", false}, // email_enabled false
 		{"SPOTIFY", "phone", false},   // phone_enabled false
 		{"SPOTIFY", "email", true},
+		// BARE has only {"enabled": true} — no per-type flags. Root defaults
+		// (phone_enabled=true, email_enabled=true) must apply, so both are on.
+		// This is the exact case that returned empty account_details before the
+		// pointer-with-default fix.
+		{"BARE", "phone", true},
+		{"BARE", "email", true},
 		{"DISABLED", "phone", false}, // enabled false
 		{"MISSING", "phone", false},  // absent
 	}

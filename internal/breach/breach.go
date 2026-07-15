@@ -114,9 +114,14 @@ func (s *Service) haveibeenpwned(ctx context.Context, email, apiKey string) ([]m
 		}
 		out := make([]model.Breach, 0, len(raw))
 		for _, b := range raw {
+			// Python (breach_crawler.py:218-223) only lowercases the KEY "Name"
+			// (-> "name"); the VALUE keeps its original case ("Vedantu"). It keeps
+			// DataClasses as-is AND adds a joined "data" string, and renames
+			// BreachDate -> date. Mirror exactly.
 			out = append(out, model.Breach{
-				Name:         strings.ToLower(b.Name),
+				Name:         b.Name,
 				Date:         b.BreachDate,
+				DataClasses:  b.DataClasses,
 				Data:         strings.Join(b.DataClasses, ","),
 				PwnCount:     b.PwnCount,
 				IsVerified:   b.IsVerified,

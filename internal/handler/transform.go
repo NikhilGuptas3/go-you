@@ -80,6 +80,15 @@ func transformResponse(resp *model.PersonaResponse, yc *appconfig.YouConfigurati
 		cleanupMeta(out)
 	}
 
+	// Final clean_empty (you_service_aggregator.py:182): drop null values
+	// recursively, keeping false/0/""/[]/{}. This is what removes the always-null
+	// IPQS/dnd/OpenAI meta keys and any errored-lane nulls, so the client shape
+	// matches prod exactly. Struct omitempty handles most of it; this is the
+	// belt-and-suspenders pass for values that serialize as explicit null.
+	cleaned, _ := cleanEmpty(out).(map[string]any)
+	if cleaned != nil {
+		return cleaned
+	}
 	return out
 }
 
@@ -125,10 +134,37 @@ func transformSection(sec map[string]any, yc *appconfig.YouConfiguration) {
 	pd["social_profile_count"] = profileCount
 }
 
-// cleanupPrediction reshapes prediction to {output_key_name: score} or
-// {error:true}, gated by the tenant prediction flag. output_key_name defaults
-// to identity_fraud_score.
+// cleanupPrediction ports response_mapper.cleanup_prediction (response_mapper.py:
+// 258-283). It has TWO parts:
+//
+//  1. Rename the top-level intelligence_data.score["onboarding_fraud_detection"]
+//     to the tenant's output_key_name (e.g. "onboarding_phone_risk_score"),
+//     gated by common_intelligence/score/onboarding_fraud_detection all enabled.
+//     This runs regardless of the prediction flag.
+//  2. If prediction is enabled, reshape the top-level "prediction" carrier to
+//     {output_key_name: predicted_score} or {error:true}; if disabled, drop it.
+//
+// output_key_name defaults to "identity_fraud_score".
 func cleanupPrediction(out map[string]any, yc *appconfig.YouConfiguration) {
+	keyName := "identity_fraud_score"
+	renameEnabled := false
+	if yc != nil {
+		keyName, renameEnabled = yc.OnboardingFraudOutputKey()
+	}
+
+	// Part 1: rename the score key in the common (top-level) intelligence_data.
+	if renameEnabled {
+		if id, ok := out["intelligence_data"].(map[string]any); ok {
+			if score, ok := id["score"].(map[string]any); ok {
+				if v, present := score["onboarding_fraud_detection"]; present {
+					score[keyName] = v
+					delete(score, "onboarding_fraud_detection")
+				}
+			}
+		}
+	}
+
+	// Part 2: prediction reshape (only when the carrier is present).
 	pred, ok := out["prediction"].(map[string]any)
 	if !ok {
 		return
@@ -137,7 +173,6 @@ func cleanupPrediction(out map[string]any, yc *appconfig.YouConfiguration) {
 		delete(out, "prediction")
 		return
 	}
-	keyName := "identity_fraud_score"
 	if _, isErr := pred["error"]; isErr {
 		out["prediction"] = map[string]any{"error": true}
 		return
