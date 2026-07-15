@@ -40,14 +40,14 @@ import (
 )
 
 type sample struct {
-	Index      int     `json:"index"`
-	Phone      string  `json:"phone"`
-	Email      string  `json:"email"`
-	StatusCode int     `json:"status_code"`
-	LatencyMs  float64 `json:"latency_ms"`
-	ServerTime string  `json:"server_timing,omitempty"`
-	YouTime    string  `json:"you_time,omitempty"`
-	Err        string  `json:"error,omitempty"`
+	Index      int             `json:"index"`
+	Phone      string          `json:"phone"`
+	Email      string          `json:"email"`
+	StatusCode int             `json:"status_code"`
+	LatencyMs  float64         `json:"latency_ms"`
+	ServerTime string          `json:"server_timing,omitempty"`
+	YouTime    string          `json:"you_time,omitempty"`
+	Err        string          `json:"error,omitempty"`
 	Body       json.RawMessage `json:"body,omitempty"`
 }
 
@@ -85,9 +85,9 @@ func main() {
 	client := &http.Client{Timeout: reqTimeout}
 
 	type levelResult struct {
-		qps       int
-		samples   []sample
-		wallSecs  float64
+		qps      int
+		samples  []sample
+		wallSecs float64
 	}
 	var results []levelResult
 

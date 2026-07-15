@@ -34,6 +34,17 @@ spec:
               value: "5000"
             - name: CRAWLER_HTTP_TIMEOUT_MS
               value: "{{ .Values.crawlerHttpTimeoutMs }}"
+            # NAMESPACE drives the ConfigFetcher override table (configs_<ns>):
+            # a namespace other than you/token makes go-you read configs_<ns>
+            # on top of the base configs table, matching config_fetcher.py.
+            #
+            # NOTE: in namespace go-you-poc this would look for configs_go-you-poc,
+            # which likely does not exist -> override lookups error (logged,
+            # non-fatal; base configs still used). To read base config cleanly for
+            # the POC, override this to "you" via values, or leave it and accept the
+            # benign log noise. See the plan's "namespace override table" risk.
+            - name: NAMESPACE
+              value: "{{ .Values.configNamespace | default "you" }}"
           # MYSQL_DSN and PROXY_URL come from the go-you-secrets Secret.
           envFrom:
             - secretRef:

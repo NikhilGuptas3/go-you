@@ -20,10 +20,13 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
+	"github.com/sign3labs/go-you/internal/breach"
 	"github.com/sign3labs/go-you/internal/config"
 	"github.com/sign3labs/go-you/internal/crawler"
 	"github.com/sign3labs/go-you/internal/handler"
+	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
 )
 
@@ -62,6 +65,18 @@ func main() {
 		authMiddleware = authr.Middleware
 	}
 
+	// --- Config fetcher (per-tenant youConfig gates + global settings) ---
+	// Polls the same MySQL `configs` table the Python service uses, on the same
+	// 5s cadence. Skipped in LOCAL_DEV (no DB). Consumed by later phases for the
+	// config-driven crawler set and feature gates.
+	var appCfg *appconfig.Fetcher
+	if db != nil {
+		appCfg = appconfig.NewFetcher(db, cfg.Namespace)
+		appCfg.Start()
+		defer appCfg.Stop()
+		log.Printf("config fetcher started (namespace=%q)", cfg.Namespace)
+	}
+
 	// --- Proxy (single static upstream, or direct if unset) ---
 	var proxyURL *url.URL
 	if cfg.ProxyURL != "" {
@@ -75,23 +90,72 @@ func main() {
 	}
 
 	// --- Crawlers (token-free only) ---
+	// The registered set is go-you's "factory"; per request the handler runs
+	// only the subset the tenant enables (appconfig.CrawlSet).
 	runner := crawler.NewRunner(
 		proxyURL,
-		crawler.NewFlipkart(cfg.HTTPTimeout),   // phone
-		crawler.NewInstagram(cfg.HTTPTimeout),  // phone
-		crawler.NewSpotify(cfg.HTTPTimeout),    // email
-		crawler.NewFreelancer(cfg.HTTPTimeout), // email
+		// Phone — stock TLS
+		crawler.NewFlipkart(cfg.HTTPTimeout),
+		crawler.NewInstagram(cfg.HTTPTimeout),
+		crawler.NewPolicybazar(cfg.HTTPTimeout),
+		crawler.NewByju(cfg.HTTPTimeout),
+		crawler.NewMonsterPhone(cfg.HTTPTimeout),
+		crawler.NewSpicejet(cfg.HTTPTimeout),
+		crawler.NewAltbalajiPhone(cfg.HTTPTimeout),
+		// Phone — uTLS (curl_cffi in Python)
+		crawler.NewHousing(cfg.HTTPTimeout),
+		crawler.NewNobroker(cfg.HTTPTimeout),
+		crawler.NewJeevansathiPhone(cfg.HTTPTimeout),
+		crawler.NewIndianExpress(cfg.HTTPTimeout),
+		crawler.NewYatra(cfg.HTTPTimeout),
+		crawler.NewIrctc(cfg.HTTPTimeout),
+		crawler.NewGaanaPhone(cfg.HTTPTimeout),
+		crawler.NewToiPhone(cfg.HTTPTimeout),
+		crawler.NewTimesPrimePhone(cfg.HTTPTimeout),
+		// Email — stock TLS
+		crawler.NewSpotify(cfg.HTTPTimeout),
+		crawler.NewFreelancer(cfg.HTTPTimeout),
+		crawler.NewMonsterEmail(cfg.HTTPTimeout),
+		crawler.NewAltbalajiEmail(cfg.HTTPTimeout),
+		crawler.NewZoomcar(cfg.HTTPTimeout),
+		crawler.NewDuolingo(cfg.HTTPTimeout),
+		crawler.NewScripbox(cfg.HTTPTimeout),
+		crawler.NewFirefox(cfg.HTTPTimeout),
+		crawler.NewWordpress(cfg.HTTPTimeout),
+		crawler.NewGravatar(cfg.HTTPTimeout),
+		crawler.NewStrava(cfg.HTTPTimeout),
+		crawler.NewGithub(cfg.HTTPTimeout),
+		crawler.NewPinterest(cfg.HTTPTimeout),
+		crawler.NewTwitterEmail(cfg.HTTPTimeout),
+		crawler.NewAdobe(cfg.HTTPTimeout),
+		crawler.NewEnvato(cfg.HTTPTimeout),
+		crawler.NewPatreon(cfg.HTTPTimeout),
+		crawler.NewBitmoji(cfg.HTTPTimeout),
+		crawler.NewDiscord(cfg.HTTPTimeout),
+		// Email — uTLS
+		crawler.NewGaanaEmail(cfg.HTTPTimeout),
+		crawler.NewJeevansathiEmail(cfg.HTTPTimeout),
 	)
 
-	// --- Meta (IPQualityScore phone/email enrichment) ---
-	metaClient := meta.New(cfg.IPQSToken, cfg.HTTPTimeout)
-	if metaClient.Enabled() {
-		log.Printf("phone/email meta enabled (IPQS)")
+	// --- Meta (phone_meta: Freecharge operator/circle + Airtel/Jio/VI postpaid
+	// + Outris revocations; email_meta: domain intelligence V2). Both read
+	// config (freecharge mapping, tpi_global_config) via the ConfigFetcher. In
+	// LOCAL_DEV appCfg is nil, so meta runs with empty config (best-effort). ---
+	var phoneMeta *meta.PhoneMetaService
+	var emailMeta *meta.EmailMetaService
+	var breachSvc *breach.Service
+	var intelSvc *intelligence.Service
+	if appCfg != nil {
+		phoneMeta = meta.NewPhoneMetaService(appCfg, proxyURL, cfg.HTTPTimeout)
+		emailMeta = meta.NewEmailMetaService(appCfg, proxyURL, cfg.HTTPTimeout)
+		breachSvc = breach.NewService(appCfg, cfg.HTTPTimeout)
+		intelSvc = intelligence.NewService(appCfg, cfg.HTTPTimeout)
+		log.Printf("meta + breach + intelligence enabled")
 	} else {
-		log.Printf("phone/email meta disabled (no IPQS_TOKEN)")
+		log.Printf("meta + breach + intelligence disabled (LOCAL_DEV: no config fetcher)")
 	}
 
-	personaHandler := handler.NewPersona(runner, metaClient)
+	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, appCfg)
 
 	// --- Router ---
 	r := chi.NewRouter()

@@ -35,7 +35,7 @@ var (
 
 func (f *Flipkart) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
 	payload, _ := json.Marshal(map[string]any{
-		"loginId":         []string{identifier},
+		"loginId":          []string{identifier},
 		"supportAllStates": true,
 	})
 

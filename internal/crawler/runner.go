@@ -12,6 +12,11 @@ import (
 // request deadline, so partial responses distinguish timeout from failure.
 var errTimedOut = errors.New("timed out")
 
+// errNoConditionMatched mirrors the Python NoConditionMatchedException — a
+// response that fits none of a spider's known verdict branches. It is an error,
+// not a false verdict.
+var errNoConditionMatched = errors.New("no condition matched")
+
 // Runner fans out a set of crawlers concurrently over one identifier, the way
 // real_time_data_service.get_organic_persona does with its thread pool. Each
 // crawler runs in its own goroutine; the shared context deadline enforces the
@@ -23,31 +28,96 @@ var errTimedOut = errors.New("timed out")
 type Runner struct {
 	proxyURL *url.URL
 	crawlers []Crawler
+	// byKind indexes registered crawlers by kind then website, so a config-driven
+	// request can select exactly the sites the tenant enabled.
+	byKind map[Kind]map[string]Crawler
 }
 
 func NewRunner(proxyURL *url.URL, crawlers ...Crawler) *Runner {
-	return &Runner{proxyURL: proxyURL, crawlers: crawlers}
+	r := &Runner{proxyURL: proxyURL, crawlers: crawlers, byKind: map[Kind]map[string]Crawler{}}
+	for _, c := range crawlers {
+		m := r.byKind[c.Kind()]
+		if m == nil {
+			m = map[string]Crawler{}
+			r.byKind[c.Kind()] = m
+		}
+		m[c.Website()] = c
+	}
+	return r
+}
+
+// Available returns the registered website names for a kind — go-you's
+// equivalent of the PhoneFactory/EmailFactory registry, used by appconfig.CrawlSet
+// to intersect with tenant enablement.
+func (r *Runner) Available(kind Kind) []string {
+	m := r.byKind[kind]
+	out := make([]string, 0, len(m))
+	for name := range m {
+		out = append(out, name)
+	}
+	return out
 }
 
 // Run probes every crawler of the given kind for identifier and returns one
 // Result each. A single crawler failing never fails the batch — its Result
 // carries the error, mirroring the Python per-section error handling.
+//
+// This is the unfiltered path (all registered crawlers of the kind). The
+// config-driven path is RunSites.
 func (r *Runner) Run(ctx context.Context, kind Kind, identifier string) []Result {
+	sel := make([]Crawler, 0, len(r.byKind[kind]))
+	for _, c := range r.byKind[kind] {
+		sel = append(sel, c)
+	}
+	return r.run(ctx, sel, identifier)
+}
+
+// RunSites probes only the named crawlers of the given kind (the tenant's
+// CrawlSet). Unknown/unregistered names are silently skipped — the config may
+// enable a site go-you hasn't ported yet.
+func (r *Runner) RunSites(ctx context.Context, kind Kind, identifier string, sites []string) []Result {
+	m := r.byKind[kind]
+	sel := make([]Crawler, 0, len(sites))
+	for _, name := range sites {
+		if c, ok := m[name]; ok {
+			sel = append(sel, c)
+		}
+	}
+	return r.run(ctx, sel, identifier)
+}
+
+func (r *Runner) run(ctx context.Context, crawlers []Crawler, identifier string) []Result {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var results []Result
+	results := make([]Result, 0, len(crawlers))
 
-	for _, c := range r.crawlers {
-		if c.Kind() != kind {
-			continue
-		}
+	for _, c := range crawlers {
 		wg.Add(1)
 		go func(c Crawler) {
 			defer wg.Done()
 
 			started := time.Now()
-			exist, err := c.Check(ctx, identifier, r.proxyURL)
-			res := Result{Website: c.Website(), Kind: c.Kind(), Duration: time.Since(started)}
+			res := Result{Website: c.Website(), Kind: c.Kind()}
+
+			// Prefer the rich path when the crawler is a DetailCrawler.
+			var err error
+			if dc, ok := c.(DetailCrawler); ok {
+				var exist *bool
+				var data map[string]any
+				exist, data, err = dc.CheckDetail(ctx, identifier, r.proxyURL)
+				if err == nil {
+					res.UserExist = exist
+					res.Data = data
+				}
+			} else {
+				var exist bool
+				exist, err = c.Check(ctx, identifier, r.proxyURL)
+				if err == nil {
+					res.UserExist = &exist
+				}
+			}
+			res.Duration = time.Since(started)
+
 			if err != nil {
 				// Distinguish "we ran out of time" from a crawler-specific
 				// failure so partial responses read clearly. A single crawler's
@@ -57,8 +127,6 @@ func (r *Runner) Run(ctx context.Context, kind Kind, identifier string) []Result
 				} else {
 					res.Err = err
 				}
-			} else {
-				res.UserExist = &exist
 			}
 
 			mu.Lock()

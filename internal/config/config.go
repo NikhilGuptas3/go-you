@@ -26,9 +26,16 @@ type Config struct {
 	// proxy is enough to prove the path.
 	ProxyURL string
 
-	// IPQSToken is the IPQualityScore API token for phone/email meta. Empty =>
-	// meta lookups are skipped (phone_meta/email_meta absent from the response).
+	// IPQSToken is the IPQualityScore API token for phone/email meta. IPQS is
+	// prod-disabled and out of scope for the full-parity build; retained only so
+	// the current handler bridge still compiles. Empty => skip.
 	IPQSToken string
+
+	// Namespace is the pod's k8s namespace. When it is not "you"/"token" the
+	// ConfigFetcher consults the override table configs_<namespace> (matching
+	// config_fetcher.py:24-26). Empty => no override table. Populated from the
+	// downward API (NAMESPACE env) in the deploy manifest.
+	Namespace string
 
 	// Crawl behaviour
 	HTTPTimeout time.Duration // per external crawler request
@@ -55,6 +62,7 @@ func Load() (*Config, error) {
 		MySQLDSN:    req("MYSQL_DSN"),
 		ProxyURL:    os.Getenv("PROXY_URL"),  // optional; empty => crawl direct
 		IPQSToken:   os.Getenv("IPQS_TOKEN"), // optional; empty => skip meta
+		Namespace:   os.Getenv("NAMESPACE"),  // optional; drives configs_<ns> override
 		HTTPTimeout: time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
 	}
 

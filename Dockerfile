@@ -1,7 +1,7 @@
 # Multi-stage build. Contrast with the Python image (~2GB with Chrome/Firefox/
 # chromedriver) — this produces a static ~15MB binary on a distroless base.
 
-FROM golang:1.22 AS build
+FROM golang:1.24 AS build
 WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download

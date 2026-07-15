@@ -23,12 +23,16 @@ const (
 )
 
 // Result is one crawler's verdict. Mirrors the Python {"user_exist": bool} plus
-// an error channel.
+// an error channel. Rich crawlers (DetailCrawler) additionally populate Data
+// with spider-specific fields (e.g. TELEGRAM username, GOOGLE reviews).
 type Result struct {
 	Website   string
 	Kind      Kind
 	UserExist *bool
-	Err       error
+	// Data holds rich per-site fields from a DetailCrawler; nil for simple
+	// crawlers. Flattened alongside user_exist in the client account entry.
+	Data map[string]any
+	Err  error
 	// Duration is how long this crawler's Check took — used for per-stage
 	// latency reporting.
 	Duration time.Duration
@@ -46,14 +50,48 @@ type Crawler interface {
 	Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error)
 }
 
+// DetailCrawler is the optional extension for spiders that return more than an
+// existence bool (TELEGRAM, GOOGLE, GITHUB, INDANE_GAS, UAN_*, ...). The runner
+// prefers CheckDetail when a crawler implements it, falling back to Check
+// otherwise. userExist may be nil (no verdict / no-match); data may be nil even
+// on a positive verdict.
+type DetailCrawler interface {
+	Crawler
+	CheckDetail(ctx context.Context, identifier string, proxyURL *url.URL) (userExist *bool, data map[string]any, err error)
+}
+
+// TLSMode selects the TLS ClientHello fingerprint a crawler's HTTP client
+// presents. Many hey-you spiders use curl_cffi to impersonate Chrome; sites that
+// fingerprint (JA3) will block Go's default net/http hello. Crawlers that need
+// impersonation request TLSChrome; the rest use TLSDefault.
+type TLSMode int
+
+const (
+	// TLSDefault uses Go's stock net/http TLS stack.
+	TLSDefault TLSMode = iota
+	// TLSChrome presents a Chrome-like ClientHello (uTLS). Used by the
+	// curl_cffi-sensitive sites flagged in the plan (Amazon, JSSO family,
+	// IRCTC, Freecharge, ...).
+	TLSChrome
+)
+
 // newHTTPClient builds a client bound to a single proxy (or direct if nil) with
-// the per-request timeout. A fresh client per call keeps proxy selection
-// independent, matching Python's per-request proxy resolution.
-//
-// NOTE: Go's net/http does not replicate curl_cffi's TLS fingerprint. If a
-// target blocks default Go TLS, that is a POC finding — swap in a utls-based
-// client here without touching the crawlers.
+// the per-request timeout, using Go's stock TLS stack. A fresh client per call
+// keeps proxy selection independent, matching Python's per-request proxy
+// resolution. Crawlers that need Chrome impersonation call newHTTPClientTLS
+// with TLSChrome instead.
 func newHTTPClient(proxyURL *url.URL, timeout time.Duration) *http.Client {
+	return newHTTPClientTLS(proxyURL, timeout, TLSDefault)
+}
+
+// newHTTPClientTLS is newHTTPClient with an explicit TLS fingerprint mode.
+// TLSChrome swaps in the uTLS round-tripper (newChromeTransport) so
+// curl_cffi-impersonating sites are not blocked; the crawlers stay unchanged
+// and only declare which mode they need.
+func newHTTPClientTLS(proxyURL *url.URL, timeout time.Duration, mode TLSMode) *http.Client {
+	if mode == TLSChrome {
+		return &http.Client{Transport: newChromeTransport(proxyURL), Timeout: timeout}
+	}
 	transport := &http.Transport{}
 	if proxyURL != nil {
 		transport.Proxy = http.ProxyURL(proxyURL)

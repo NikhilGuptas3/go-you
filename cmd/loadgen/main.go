@@ -4,12 +4,13 @@
 // simple and dependency-free (stdlib only) — it ships as a k8s Job.
 //
 // Config via env:
-//   TARGET_URL   full URL, e.g. http://go-you.go-you-poc.svc.cluster.local/v1/persona
-//   AUTH_USER    tenant id (Basic auth)   — required unless target is LOCAL_DEV
-//   AUTH_PASS    tenant secret
-//   CONCURRENCY  parallel workers          (default 5 — keep low: real endpoints)
-//   DURATION     e.g. 60s                   (default 60s)
-//   BODY         request JSON               (default: sample phone+email)
+//
+//	TARGET_URL   full URL, e.g. http://go-you.go-you-poc.svc.cluster.local/v1/persona
+//	AUTH_USER    tenant id (Basic auth)   — required unless target is LOCAL_DEV
+//	AUTH_PASS    tenant secret
+//	CONCURRENCY  parallel workers          (default 5 — keep low: real endpoints)
+//	DURATION     e.g. 60s                   (default 60s)
+//	BODY         request JSON               (default: sample phone+email)
 //
 // It prints a percentile summary at the end; the real graph comes from Grafana
 // scraping go-you's own api_latency during the run.
@@ -40,10 +41,10 @@ func main() {
 	fmt.Printf("loadgen → %s\n  concurrency=%d duration=%s\n", target, concurrency, duration)
 
 	var (
-		total   int64
-		errs    int64
-		mu      sync.Mutex
-		latMs   []float64
+		total int64
+		errs  int64
+		mu    sync.Mutex
+		latMs []float64
 	)
 	client := &http.Client{Timeout: 30 * time.Second}
 	deadline := time.Now().Add(duration)
