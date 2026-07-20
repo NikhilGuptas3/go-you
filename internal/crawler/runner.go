@@ -46,6 +46,15 @@ func NewRunner(proxyURL *url.URL, crawlers ...Crawler) *Runner {
 	return r
 }
 
+// Lookup returns the registered crawler for (kind, website), or nil. Used by the
+// handler to reach a rich crawler's extra API (e.g. the UPI adapter's Config()).
+func (r *Runner) Lookup(kind Kind, website string) Crawler {
+	if m := r.byKind[kind]; m != nil {
+		return m[website]
+	}
+	return nil
+}
+
 // Available returns the registered website names for a kind — go-you's
 // equivalent of the PhoneFactory/EmailFactory registry, used by appconfig.CrawlSet
 // to intersect with tenant enablement.

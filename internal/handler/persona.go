@@ -18,6 +18,7 @@ import (
 	"github.com/sign3labs/go-you/internal/auth"
 	"github.com/sign3labs/go-you/internal/breach"
 	"github.com/sign3labs/go-you/internal/crawler"
+	"github.com/sign3labs/go-you/internal/crawler/upi"
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
 	"github.com/sign3labs/go-you/internal/metrics"
@@ -69,6 +70,17 @@ func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailM
 
 // breachOn reports whether the breach lane runs (tenant breach flag; nil => on).
 func breachOn(yc *appconfig.YouConfiguration) bool { return yc == nil || yc.Breach }
+
+// upiConfig returns the registered UPI crawler's parsed config (for the
+// transform's CLIENT_RESPONSE / verified-names handling), or nil when UPI is not
+// registered (LOCAL_DEV).
+func (h *Persona) upiConfig() *upi.Config {
+	c := h.runner.Lookup(crawler.KindPhone, "UPI")
+	if uc, ok := c.(*crawler.UPICrawler); ok {
+		return uc.Config()
+	}
+	return nil
+}
 
 func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -166,7 +178,8 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// prediction reshaped, meta stripped unless ?meta is absent-but-present.
 	// (See transform.go for the full rule set.)
 	metaParam := r.URL.Query().Has("meta")
-	out := transformResponse(&resp, yc, metaParam)
+	ut := resolveUPITransform(h.upiConfig(), yc)
+	out := transformResponse(&resp, yc, metaParam, ut)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Server-Timing", tm.serverTimingHeader())

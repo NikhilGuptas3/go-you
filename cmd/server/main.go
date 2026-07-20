@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"github.com/sign3labs/go-you/internal/breach"
 	"github.com/sign3labs/go-you/internal/config"
 	"github.com/sign3labs/go-you/internal/crawler"
+	"github.com/sign3labs/go-you/internal/crawler/upi"
 	"github.com/sign3labs/go-you/internal/handler"
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
@@ -92,8 +94,7 @@ func main() {
 	// --- Crawlers (token-free only) ---
 	// The registered set is go-you's "factory"; per request the handler runs
 	// only the subset the tenant enables (appconfig.CrawlSet).
-	runner := crawler.NewRunner(
-		proxyURL,
+	crawlers := []crawler.Crawler{
 		// Phone — stock TLS
 		crawler.NewFlipkart(cfg.HTTPTimeout),
 		crawler.NewInstagram(cfg.HTTPTimeout),
@@ -135,7 +136,17 @@ func main() {
 		// Email — uTLS
 		crawler.NewGaanaEmail(cfg.HTTPTimeout),
 		crawler.NewJeevansathiEmail(cfg.HTTPTimeout),
-	)
+	}
+
+	// UPI (phone) — needs config (upi_config + cashfree creds), so only when the
+	// ConfigFetcher is available (not LOCAL_DEV). The tenant overlay of
+	// website_config[UPI] is applied per-request in the handler; here we seed the
+	// global upi_config default from the fetcher.
+	if appCfg != nil {
+		crawlers = append(crawlers, buildUPICrawler(appCfg, cfg))
+	}
+
+	runner := crawler.NewRunner(proxyURL, crawlers...)
 
 	// --- Meta (phone_meta: Freecharge operator/circle + Airtel/Jio/VI postpaid
 	// + Outris revocations; email_meta: domain intelligence V2). Both read
@@ -211,4 +222,55 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// buildUPICrawler assembles the UPI phone crawler's dependencies from the
+// ConfigFetcher (upi_config, cashfree_cred) and env, mirroring how the Python
+// UPI spider reads its config. The Cashfree signing PEM path comes from
+// CASHFREE_PUBKEY_PEM (ships with the image, like the Python engine dir); the
+// PhonePe emulator url/token from env with the prod defaults.
+func buildUPICrawler(appCfg *appconfig.Fetcher, cfg *config.Config) crawler.Crawler {
+	upiCfgJSON := marshalConfigValue(appCfg.Get("upi_config", nil))
+	cf, _ := appCfg.Get("cashfree_cred", nil).(map[string]any)
+	getS := func(m map[string]any, k string) string {
+		if m == nil {
+			return ""
+		}
+		s, _ := m[k].(string)
+		return s
+	}
+	deps := upi.Deps{
+		UPIConfigJSON: upiCfgJSON,
+		Cashfree: upi.CashfreeCreds{
+			ClientID:     getS(cf, "x-client-id"),
+			ClientSecret: getS(cf, "x-client-secret"),
+			RequestID:    getS(cf, "X-Request-Id"),
+			APIVersion:   getS(cf, "x-api-version"),
+			PubKeyPath:   os.Getenv("CASHFREE_PUBKEY_PEM"),
+		},
+		PhonePeURL:   getEnvDefault("PHONEPE_EMULATOR_URL", "https://p.sign3.in/v1/phonepe/"),
+		PhonePeToken: getEnvDefault("PHONEPE_EMULATOR_TOKEN", "sanchit"),
+	}
+	return crawler.NewUPI(deps, cfg.HTTPTimeout)
+}
+
+// marshalConfigValue re-marshals a ConfigFetcher value (decoded as any) back to
+// JSON so the UPI package can unmarshal it into its typed Config. Returns nil
+// when absent (UPI falls back to its built-in default).
+func marshalConfigValue(v any) json.RawMessage {
+	if v == nil {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func getEnvDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
 }

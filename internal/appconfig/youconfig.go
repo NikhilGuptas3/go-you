@@ -221,6 +221,90 @@ func (yc *YouConfiguration) RequestTimeoutFor(requestCount int) (float64, bool) 
 	return yc.RequestTimeout[idx-1], true
 }
 
+// --- UPI / verified-names accessors (used by the transform) ---
+
+// WebsiteEnabledFlag reports websites[site].enabled == true (the site-level
+// enable, independent of the per-type flags). Used for PHONEPE gating in the UPI
+// transform.
+func (yc *YouConfiguration) WebsiteEnabledFlag(site string) bool {
+	e, ok := yc.Websites[site]
+	return ok && e.Enabled
+}
+
+// WebsiteConfigValue returns youConfig.websites[site][key] and whether present.
+// website_config == youConfig["websites"] (config_service.get_websites_config).
+func (yc *YouConfiguration) WebsiteConfigValue(site, key string) (any, bool) {
+	ws, ok := yc.raw["websites"].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	entry, ok := ws[site].(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	v, ok := entry[key]
+	return v, ok
+}
+
+// IntelligenceBool reads youConfig.intelligence[key] as a bool (false absent).
+func (yc *YouConfiguration) IntelligenceBool(key string) bool {
+	return boolAt(yc.Intelligence, key)
+}
+
+// VerifiedNamesEnabled reports intelligence.verified_names_config.enabled == true.
+func (yc *YouConfiguration) VerifiedNamesEnabled() bool {
+	vn, ok := yc.Intelligence["verified_names_config"].(map[string]any)
+	if !ok {
+		return false
+	}
+	return boolAt(vn, "enabled")
+}
+
+// VerifiedNamesConfig resolves intelligence.verified_names_config into the
+// upi.VerifiedNamesConfig shape (with the Python defaults for absent keys). It
+// returns a value the UPI transform consumes; the *bool fields carry
+// present/absent so upi's `in [True, None]` semantics are preserved. It lives
+// here (not in upi) via a lightweight anonymous carrier to avoid an import
+// cycle — the handler adapts it to upi.VerifiedNamesConfig.
+func (yc *YouConfiguration) VerifiedNamesConfig() *VerifiedNamesRaw {
+	vn, ok := yc.Intelligence["verified_names_config"].(map[string]any)
+	if !ok {
+		// Python default VerifiedNamesConfig() when absent.
+		return &VerifiedNamesRaw{Enabled: false}
+	}
+	r := &VerifiedNamesRaw{Enabled: boolAt(vn, "enabled")}
+	r.Name = boolPtrFrom(vn, "name")
+	r.UpiIDs = boolPtrFrom(vn, "upi_ids")
+	r.Encoding = boolPtrFrom(vn, "encoding")
+	r.AlphanumericID = boolPtrFrom(vn, "alphanumeric_id")
+	r.Source = boolPtrFrom(vn, "source")
+	return r
+}
+
+// VerifiedNamesRaw is the tenant verified_names_config as read from youConfig,
+// with present/absent preserved via pointers. The handler maps it to
+// upi.VerifiedNamesConfig (kept separate to avoid an appconfig->upi import).
+type VerifiedNamesRaw struct {
+	Enabled        bool
+	Name           *bool
+	UpiIDs         *bool
+	Encoding       *bool
+	AlphanumericID *bool
+	Source         *bool
+}
+
+func boolPtrFrom(m map[string]any, key string) *bool {
+	v, ok := m[key]
+	if !ok {
+		return nil
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return nil
+	}
+	return &b
+}
+
 // boolAt reads m[key] as a bool, false when absent or non-bool.
 func boolAt(m map[string]any, key string) bool {
 	if m == nil {

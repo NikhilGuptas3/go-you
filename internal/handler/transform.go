@@ -56,20 +56,22 @@ func computeTopLevelStatus(resp *model.PersonaResponse) (int, string) {
 //     even ?meta=false, skips the strip; only a fully-absent param runs it)
 //   - common_data is never produced here, so no explicit drop needed
 //
-// metaPresent is true when the request carried a ?meta query param at all.
-func transformResponse(resp *model.PersonaResponse, yc *appconfig.YouConfiguration, metaPresent bool) map[string]any {
+// metaPresent is true when the request carried a ?meta query param at all. ut
+// carries the resolved UPI transform config (nil when UPI is unregistered).
+func transformResponse(resp *model.PersonaResponse, yc *appconfig.YouConfiguration, metaPresent bool, ut *upiTransform) map[string]any {
 	// Marshal the typed response to a generic map so we can reshape freely, the
 	// way the Python transform mutates a dict.
 	b, _ := json.Marshal(resp)
 	var out map[string]any
 	_ = json.Unmarshal(b, &out)
 
-	// Per-section reshape.
+	// Per-section reshape. ut carries the UPI transform config (nil when UPI is
+	// unavailable); UPI only appears in the phone section.
 	if sec, ok := out["phone_data"].(map[string]any); ok {
-		transformSection(sec, yc)
+		transformSection(sec, yc, ut)
 	}
 	if sec, ok := out["email_data"].(map[string]any); ok {
-		transformSection(sec, yc)
+		transformSection(sec, yc, nil)
 	}
 
 	// cleanup_prediction (top level).
@@ -92,40 +94,75 @@ func transformResponse(resp *model.PersonaResponse, yc *appconfig.YouConfigurati
 	return out
 }
 
-// transformSection reshapes one section's primary_data: account_details to a
-// keyed map, dropping client_response:false sites and recomputing the count.
-func transformSection(sec map[string]any, yc *appconfig.YouConfiguration) {
+// transformSection reshapes one section's primary_data in the order Python's
+// transform_by_type applies (for the token-free + UPI source set):
+//  1. account_details slice -> keyed map (strip the _website hint)
+//  2. transform_upi_response: reshape the raw UPI entry + derive PHONEPE
+//  3. remove_intelligence_data (UPI branch): derive bank_verified_name /
+//     verified_names_status / verified_names into the section intelligence_data
+//  4. remove_client_response_disabled_websites: drop client_response:false sites
+//  5. remove_upi_responses: drop the UPI entry unless UPI CLIENT_RESPONSE is on
+//  6. recompute social_profile_count over what remains
+func transformSection(sec map[string]any, yc *appconfig.YouConfiguration, ut *upiTransform) {
 	pd, ok := sec["primary_data"].(map[string]any)
 	if !ok {
 		return
 	}
 	list, ok := pd["account_details"].([]any)
 	if !ok {
-		// Already a map or absent — nothing to reshape.
-		return
+		return // already a map or absent
 	}
+
+	// (1) slice -> keyed map. No drops yet (UPI intelligence needs the entry).
 	m := make(map[string]any, len(list))
-	profileCount := 0
 	for _, e := range list {
 		entry, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
-		// The marshaler drops "website" from the entry, so recover it from the
-		// typed slice is not possible here — instead the entry retains no name.
-		// We therefore key by a "website" field the transform-time struct still
-		// carries: re-add it below via the parallel typed slice. To keep this
-		// self-contained, transformSection is only reached with entries that
-		// include a "_website" hint (set by the pre-transform step).
 		name, _ := entry["_website"].(string)
 		if name == "" {
 			continue
 		}
 		delete(entry, "_website")
-		if yc != nil && !yc.ClientResponse(name) {
-			continue // drop client_response:false site
-		}
 		m[name] = entry
+	}
+
+	// (2) UPI response reshape + PHONEPE derivation.
+	transformUPIResponse(m, ut)
+
+	// (3) UPI-derived section intelligence_data (bank_verified_name/verified_names).
+	if ut != nil {
+		var intel map[string]any
+		if existing, ok := sec["intelligence_data"].(map[string]any); ok {
+			intel = existing
+		}
+		intel = deriveUPIIntelligence(m, intel, ut)
+		if len(intel) > 0 {
+			sec["intelligence_data"] = intel
+		}
+	}
+
+	// (4) client_response:false drop + (5) UPI drop unless CLIENT_RESPONSE.
+	for name := range m {
+		if name == "UPI" {
+			if ut == nil || !ut.clientResponse {
+				delete(m, name)
+			}
+			continue
+		}
+		if yc != nil && !yc.ClientResponse(name) {
+			delete(m, name)
+		}
+	}
+
+	// (6) recompute social_profile_count.
+	profileCount := 0
+	for _, v := range m {
+		entry, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
 		if ue, ok := entry["user_exist"].(bool); ok && ue {
 			profileCount++
 		}

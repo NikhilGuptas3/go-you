@@ -46,7 +46,7 @@ func TestTransformAccountDetailsToMapAndDrop(t *testing.T) {
 	yc := ycWith(t)
 	resp.StatusCode, resp.Status = computeTopLevelStatus(resp)
 
-	out := transformResponse(resp, yc, false)
+	out := transformResponse(resp, yc, false, nil)
 
 	ed := out["email_data"].(map[string]any)
 	pd := ed["primary_data"].(map[string]any)
@@ -155,7 +155,7 @@ func TestCleanupMetaGotcha(t *testing.T) {
 		}
 	}
 	// meta absent => strip runs.
-	out := transformResponse(respFrom(mk()), nil, false)
+	out := transformResponse(respFrom(mk()), nil, false, nil)
 	score := out["intelligence_data"].(map[string]any)["score"].(map[string]any)
 	if _, ok := score["reverse_model_list"]; ok {
 		t.Error("reverse_model_list should be stripped when meta param absent")
@@ -166,7 +166,7 @@ func TestCleanupMetaGotcha(t *testing.T) {
 	}
 
 	// meta present => strip skipped.
-	out2 := transformResponse(respFrom(mk()), nil, true)
+	out2 := transformResponse(respFrom(mk()), nil, true, nil)
 	score2 := out2["intelligence_data"].(map[string]any)["score"].(map[string]any)
 	if _, ok := score2["reverse_model_list"]; !ok {
 		t.Error("reverse_model_list should be kept when meta param present")
