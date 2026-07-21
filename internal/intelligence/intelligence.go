@@ -20,9 +20,17 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// debugML is set once from the DEBUG_ML env var. When true, callMLService logs
+// the feature_list, the outbound YOU payload key shape, and the raw ml_service
+// response so a presence-score / digital_age {error:true} can be attributed to
+// ml_service vs the go-you merge. Off by default — no behavior change.
+var debugML = os.Getenv("DEBUG_ML") == "1"
 
 // ConfigGetter is the subset of appconfig.Fetcher this package needs
 // (ml_service_config).
@@ -152,6 +160,11 @@ func (s *Service) callMLService(ctx context.Context, mlCfg map[string]any, in In
 	if err != nil {
 		return map[string]any{}
 	}
+	if debugML {
+		flJSON, _ := json.Marshal(featureList)
+		log.Printf("[DEBUG_ML] feature_list=%s", flJSON)
+		log.Printf("[DEBUG_ML] outbound YOU payload (%d bytes): %s", len(body), truncate(string(body), 8000))
+	}
 	timeout := s.timeout
 	if t, ok := mlCfg["timeout"].(float64); ok && t > 0 {
 		timeout = time.Duration(t * float64(time.Second))
@@ -176,11 +189,24 @@ func (s *Service) callMLService(ctx context.Context, mlCfg map[string]any, in In
 	if err != nil {
 		return map[string]any{}
 	}
+	if debugML {
+		log.Printf("[DEBUG_ML] ml_service HTTP %d, raw response (%d bytes): %s",
+			resp.StatusCode, len(respBody), truncate(string(respBody), 16000))
+	}
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return map[string]any{}
 	}
 	return parsed
+}
+
+// truncate caps a string for debug logging so a large payload/response does not
+// flood the log; appends an elision marker when cut.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…(truncated, " + strconv.Itoa(len(s)-n) + " more bytes)"
 }
 
 // --- feature list ---
