@@ -30,6 +30,7 @@ import (
 	"github.com/sign3labs/go-you/internal/handler"
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
+	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
 func main() {
@@ -166,7 +167,17 @@ func main() {
 		log.Printf("meta + breach + intelligence disabled (LOCAL_DEV: no config fetcher)")
 	}
 
-	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, appCfg)
+	// --- Static persona repo (MySQL): feeds phone breach, digital_age, linked_ids.
+	// Reuses the same *sql.DB as auth/config. nil in LOCAL_DEV → those signals
+	// degrade to empty/error (staticdata.New returns nil for a nil db). ---
+	staticRepo := staticdata.New(db)
+	if staticRepo != nil {
+		log.Printf("static persona repo enabled (phone breach + digital_age + linked_ids)")
+	} else {
+		log.Printf("static persona repo disabled (no DB): phone breach empty, digital_age error")
+	}
+
+	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg)
 
 	// --- Router ---
 	r := chi.NewRouter()

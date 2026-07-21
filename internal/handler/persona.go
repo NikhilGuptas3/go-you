@@ -23,6 +23,7 @@ import (
 	"github.com/sign3labs/go-you/internal/meta"
 	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
+	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
 const (
@@ -59,13 +60,17 @@ type Persona struct {
 	emailMeta *meta.EmailMetaService
 	breach    *breach.Service
 	intel     *intelligence.Service
+	// static is the MySQL-backed static-persona repo (feeds phone breach,
+	// digital_age, linked_ids). nil in LOCAL_DEV / when no DB — the derived
+	// signals then degrade to their empty/error forms.
+	static *staticdata.Repo
 	// cfg is the ConfigFetcher (per-tenant youConfig gates, global settings).
 	// nil in LOCAL_DEV where MySQL — and therefore the configs table — is absent.
 	cfg *appconfig.Fetcher
 }
 
-func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, cfg *appconfig.Fetcher) *Persona {
-	return &Persona{runner: runner, phoneMeta: phoneMeta, emailMeta: emailMeta, breach: breachSvc, intel: intel, cfg: cfg}
+func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher) *Persona {
+	return &Persona{runner: runner, phoneMeta: phoneMeta, emailMeta: emailMeta, breach: breachSvc, intel: intel, static: static, cfg: cfg}
 }
 
 // breachOn reports whether the breach lane runs (tenant breach flag; nil => on).
@@ -206,14 +211,16 @@ func (h *Persona) resolveConfig(tenant *auth.Tenant) (yc *appconfig.YouConfigura
 
 // phoneMetaOn reports whether the phone_meta lane should run for this tenant.
 //
-// Python fetches phone_meta UNCONDITIONALLY: YouServicePhone.get_user_persona
-// always submits get_phone_intelligence and map_response always attaches
-// phone_meta (you_service_phone.py:32,82). The top-level youConfig "phone_meta"
-// flag only drives analytics events (request_context_service.py:18) and is not
-// even present in the root config, so it must never suppress the meta output.
-// The real per-feature gates live deeper (postpaid via is_postpaid_enabled). So
-// phone_meta always runs here.
-func phoneMetaOn(yc *appconfig.YouConfiguration) bool { return true }
+// The gate is config_service.is_phone_info_enabled: the CachedPhoneInfoService
+// returns None when phone_info.enabled is explicitly false
+// (cached_phone_info_service.py:73), so phone_number_details is None and
+// clean_empty drops the whole phone_meta key from the response. When the
+// phone_info block is absent (or has no "enabled" key) it defaults to enabled,
+// matching prod. The top-level youConfig "phone_meta" flag is analytics-only and
+// is NOT this gate. nil youConfig (LOCAL_DEV) => on.
+func phoneMetaOn(yc *appconfig.YouConfiguration) bool {
+	return yc == nil || yc.IsPhoneInfoEnabled()
+}
 
 // emailMetaOn reports whether the email_meta lane runs.
 //
@@ -250,10 +257,31 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm 
 	var (
 		results   []crawler.Result
 		phoneMeta *model.PhoneMeta
+		static    map[string]any
 		inner     sync.WaitGroup
 	)
+	// static login id for phone = country_code+national_number, no '+'
+	// (StaticDataService: login_id.country_code + login_id.national_number).
+	staticID := strings.TrimPrefix(identifier, "+")
+
 	inner.Add(1)
 	go func() { defer inner.Done(); results = h.runCrawlers(ctx, crawler.KindPhone, identifier, sites) }()
+
+	// static_data feeds phone breach + digital_age + linked_ids. Fetch once,
+	// concurrently, under the same leaf-only ctx. Only when a signal that needs
+	// it is enabled (breach / digital_age / linked_ids).
+	if h.static != nil && phoneStaticNeeded(yc) {
+		inner.Add(1)
+		go func() {
+			defer inner.Done()
+			staticStart := time.Now()
+			doc, err := h.static.GetInorganic(ctx, staticID)
+			tm.since("static_phone", staticStart)
+			if err == nil {
+				static = doc
+			}
+		}()
+	}
 
 	if h.phoneMeta != nil && phoneMetaOn(yc) {
 		inner.Add(1)
@@ -287,12 +315,61 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm 
 	if phoneMeta != nil {
 		sec.PrimaryData.PhoneMeta = phoneMeta
 	}
-	// Phone breach is deterministic-empty (no static-data source); attach it
-	// synchronously when the tenant enables breach.
+	// Phone breach: computed from static_data (pawn_service.get_breach_details).
+	// With no static repo / no match it yields the empty not-found block.
 	if h.breach != nil && breachOn(yc) {
-		sec.PrimaryData.BreachDetails = h.breach.Phone(identifier)
+		sec.PrimaryData.BreachDetails = h.breach.Phone(identifier, staticID, static)
+	}
+	// digital_age + linked_ids derived from static_data, gated per-key. Stashed on
+	// the section intelligence_data BEFORE applyIntelligence, which then merges the
+	// ml_service output on top without clobbering these.
+	if intel := phoneStaticIntelligence(yc, static, phoneMeta); intel != nil {
+		sec.IntelligenceData = intel
 	}
 	return sec
+}
+
+// phoneStaticNeeded reports whether any phone signal that consumes static_data is
+// enabled (breach OR digital_age OR linked_ids), so we skip the DB round-trip
+// when none are.
+func phoneStaticNeeded(yc *appconfig.YouConfiguration) bool {
+	if breachOn(yc) {
+		return true
+	}
+	if yc == nil {
+		return false
+	}
+	return yc.IntelligenceBool("digital_age") || yc.IntelligenceBool("linked_ids")
+}
+
+// phoneStaticIntelligence builds the section intelligence_data derived from
+// static_data (digital_age from static dates + revocations; linked_ids from
+// primary_email), each gated by its youConfig.intelligence flag. Returns nil when
+// nothing is enabled/derived so we don't attach an empty block.
+func phoneStaticIntelligence(yc *appconfig.YouConfiguration, static map[string]any, phoneMeta *model.PhoneMeta) *model.IntelligenceData {
+	if yc == nil {
+		return nil
+	}
+	id := &model.IntelligenceData{}
+	set := false
+	if yc.IntelligenceBool("digital_age") {
+		var revocations map[string]any
+		if phoneMeta != nil {
+			revocations = phoneMeta.Revocations
+		}
+		id.DigitalAge = staticdata.PhoneDigitalAge(static, revocations, time.Now()).Map()
+		set = true
+	}
+	if yc.IntelligenceBool("linked_ids") {
+		if ids := staticdata.LinkedIDs(static, staticdata.KindPhone); len(ids) > 0 {
+			id.LinkedIDs = ids
+			set = true
+		}
+	}
+	if !set {
+		return nil
+	}
+	return id
 }
 
 // buildEmailSection runs the email crawlers and email meta concurrently.
@@ -301,10 +378,26 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timin
 		results   []crawler.Result
 		emailMeta *model.EmailMeta
 		breachDet *model.BreachDetails
+		static    map[string]any
 		inner     sync.WaitGroup
 	)
 	inner.Add(1)
 	go func() { defer inner.Done(); results = h.runCrawlers(ctx, crawler.KindEmail, email, sites) }()
+
+	// static_data feeds email linked_ids (primary_ph). digital_age for email uses
+	// the HIBP breach dates, not static_data. Fetch only when linked_ids is on.
+	if h.static != nil && emailStaticNeeded(yc) {
+		inner.Add(1)
+		go func() {
+			defer inner.Done()
+			staticStart := time.Now()
+			doc, err := h.static.GetInorganic(ctx, email)
+			tm.since("static_email", staticStart)
+			if err == nil {
+				static = doc
+			}
+		}()
+	}
 
 	if h.emailMeta != nil && emailMetaOn(yc) {
 		inner.Add(1)
@@ -340,7 +433,56 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timin
 	if breachDet != nil {
 		sec.PrimaryData.BreachDetails = breachDet
 	}
+	// digital_age (from verified breach dates) + linked_ids (from static primary_ph),
+	// gated per-key; merged by applyIntelligence afterwards.
+	if intel := emailStaticIntelligence(yc, static, breachDet); intel != nil {
+		sec.IntelligenceData = intel
+	}
 	return sec
+}
+
+// emailStaticNeeded reports whether the email branch needs static_data. Only
+// linked_ids consumes it (email digital_age uses breach dates, not static).
+func emailStaticNeeded(yc *appconfig.YouConfiguration) bool {
+	return yc != nil && yc.IntelligenceBool("linked_ids")
+}
+
+// emailStaticIntelligence builds the email section intelligence_data: digital_age
+// from the verified HIBP breach dates and linked_ids from static primary_ph, each
+// gated. Returns nil when nothing is enabled/derived.
+func emailStaticIntelligence(yc *appconfig.YouConfiguration, static map[string]any, breachDet *model.BreachDetails) *model.IntelligenceData {
+	if yc == nil {
+		return nil
+	}
+	id := &model.IntelligenceData{}
+	set := false
+	if yc.IntelligenceBool("digital_age") {
+		id.DigitalAge = staticdata.EmailDigitalAge(breachesToMaps(breachDet), time.Now()).Map()
+		set = true
+	}
+	if yc.IntelligenceBool("linked_ids") {
+		if ids := staticdata.LinkedIDs(static, staticdata.KindEmail); len(ids) > 0 {
+			id.LinkedIDs = ids
+			set = true
+		}
+	}
+	if !set {
+		return nil
+	}
+	return id
+}
+
+// breachesToMaps converts the typed breach list into the {IsVerified, date} maps
+// EmailDigitalAge expects (it reads breach_details.breaches from a loose doc).
+func breachesToMaps(bd *model.BreachDetails) []map[string]any {
+	if bd == nil {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(bd.Breaches))
+	for _, b := range bd.Breaches {
+		out = append(out, map[string]any{"IsVerified": b.IsVerified, "date": b.Date})
+	}
+	return out
 }
 
 // domainAttrsToModel maps the meta service's loose domain_attributes map into
@@ -430,10 +572,10 @@ func (h *Persona) applyIntelligence(ctx context.Context, req *model.PersonaReque
 	})
 
 	if resp.PhoneData != nil && len(out.PhoneIntel) > 0 {
-		resp.PhoneData.IntelligenceData = mapToIntelligenceData(out.PhoneIntel)
+		resp.PhoneData.IntelligenceData = mergeIntelligenceData(resp.PhoneData.IntelligenceData, out.PhoneIntel)
 	}
 	if resp.EmailData != nil && len(out.EmailIntel) > 0 {
-		resp.EmailData.IntelligenceData = mapToIntelligenceData(out.EmailIntel)
+		resp.EmailData.IntelligenceData = mergeIntelligenceData(resp.EmailData.IntelligenceData, out.EmailIntel)
 	}
 	if len(out.CommonIntel) > 0 {
 		resp.IntelligenceData = mapToIntelligenceData(out.CommonIntel)
@@ -507,10 +649,94 @@ func mapToIntelligenceData(m map[string]any) *model.IntelligenceData {
 	if bvn, ok := m["bank_verified_name"].(string); ok {
 		id.BankVerifiedName = bvn
 	}
+	if vns, ok := m["verified_names_status"].(string); ok {
+		id.VerifiedNamesStatus = vns
+	}
 	if da, ok := m["digital_age"].(map[string]any); ok {
 		id.DigitalAge = da
 	}
+	id.AssociatedNames = toStringList(m["associated_names"])
+	id.NonVerifiedNames = toStringList(m["non_verified_names"])
+	id.LinkedIDs = toStringList(m["linked_ids"])
 	return id
+}
+
+// toStringList coerces a JSON-decoded value into []string (nil when not a list of
+// strings), tolerating the []any-of-strings shape from a JSON round-trip.
+func toStringList(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// mergeIntelligenceData layers the ml_service output map onto the section
+// intelligence_data already derived from static_data (digital_age, linked_ids),
+// without clobbering the static signals. base may be nil (no static derivation).
+//
+// Precedence rules:
+//   - Score / bank_verified_name / verified_names* / associated_names / non_verified_names
+//     come from ml_service (static does not produce them).
+//   - digital_age: keep the static value UNLESS static is absent/errored, in which
+//     case fall back to ml_service's (which is typically {error:true} in go-you).
+//   - linked_ids: keep the static value when present; else take ml_service's.
+func mergeIntelligenceData(base *model.IntelligenceData, m map[string]any) *model.IntelligenceData {
+	ml := mapToIntelligenceData(m)
+	if base == nil {
+		return ml
+	}
+	// ml_service-owned fields overwrite (base never sets these).
+	base.Score = ml.Score
+	if ml.BankVerifiedName != "" {
+		base.BankVerifiedName = ml.BankVerifiedName
+	}
+	if ml.VerifiedNamesStatus != "" {
+		base.VerifiedNamesStatus = ml.VerifiedNamesStatus
+	}
+	if len(ml.AssociatedNames) > 0 {
+		base.AssociatedNames = ml.AssociatedNames
+	}
+	if len(ml.NonVerifiedNames) > 0 {
+		base.NonVerifiedNames = ml.NonVerifiedNames
+	}
+	// digital_age: prefer the static-derived value; only take ml_service's when
+	// static produced nothing usable (nil or {error:true}).
+	if isUsableDigitalAge(base.DigitalAge) {
+		// keep base
+	} else if ml.DigitalAge != nil {
+		base.DigitalAge = ml.DigitalAge
+	}
+	// linked_ids: static wins when present.
+	if len(base.LinkedIDs) == 0 && len(ml.LinkedIDs) > 0 {
+		base.LinkedIDs = ml.LinkedIDs
+	}
+	return base
+}
+
+// isUsableDigitalAge reports whether a digital_age map carries a real value
+// (has a "year") rather than being nil or an {error:true} placeholder.
+func isUsableDigitalAge(da map[string]any) bool {
+	if da == nil {
+		return false
+	}
+	if e, ok := da["error"].(bool); ok && e {
+		return false
+	}
+	_, hasYear := da["year"]
+	return hasYear
 }
 
 // nationalFromIdentifier strips the leading "+91" from a normalized identifier

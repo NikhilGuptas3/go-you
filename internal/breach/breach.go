@@ -3,9 +3,10 @@
 //
 // Email breach uses HaveIBeenPwned live (the only provider still wired in prod;
 // firefox/pastebin/emailrep/breachdirectory are dead and not ported). Phone
-// breach in prod is computed purely from DynamoDB static data — which go-you
-// does not have — so it degrades deterministically to an empty, not-found
-// result. This is a documented capability gap, not a bug.
+// breach is computed from the static persona document (see phone_static.go):
+// go-you sources that document from MySQL (internal/staticdata) rather than
+// DynamoDB, so a real "found" result is possible when a match exists; when the
+// static document is unavailable it degrades to the empty, not-found block.
 package breach
 
 import (
@@ -35,15 +36,41 @@ func NewService(cfg ConfigGetter, timeout time.Duration) *Service {
 	return &Service{cfg: cfg, timeout: timeout}
 }
 
-// Phone returns the phone breach block. Under the no-cloud constraint there is
-// no static-data source, so this is always {phone, breaches:[], not-found} —
-// matching pawn_service.get_breach_details when static_data is nil.
-func (s *Service) Phone(intl string) *model.BreachDetails {
+// Phone returns the phone breach block, computed from the static persona
+// document (pawn_service.get_breach_details). static is the decoded static-data
+// map ({source: [{"payload": {...}}]}) for this number, or nil when static data
+// is unavailable (no repo / no mapping) — in which case the result is the empty
+// {phone, breaches:[], not-found} block, exactly as Python yields for nil
+// static_data. loginID is the match key country_code+national_number.
+func (s *Service) Phone(intl, loginID string, static map[string]any) *model.BreachDetails {
+	breaches, status := phoneBreachFromStatic(static, loginID, s.breachDates())
+	if breaches == nil {
+		breaches = []model.Breach{}
+	}
 	return &model.BreachDetails{
 		Phone:          intl,
-		Breaches:       []model.Breach{},
-		BreachesStatus: "not-found",
+		Breaches:       breaches,
+		BreachesStatus: status,
 	}
+}
+
+// breachDates reads the breach_date_per_source config (source-lower -> "YYYY-MM").
+// Absent config yields nil, so every breach date defaults to "NA".
+func (s *Service) breachDates() map[string]string {
+	if s.cfg == nil {
+		return nil
+	}
+	raw, ok := s.cfg.Get("breach_date_per_source", nil).(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if str, ok := v.(string); ok {
+			out[k] = str
+		}
+	}
+	return out
 }
 
 // Email returns the email breach block from HaveIBeenPwned. Gated by the
