@@ -34,31 +34,32 @@ func CleanProfileForResponse(upiProfile map[string]any, vnCfg *VerifiedNamesConf
 	// De-dup nested profiles by suffix, keeping only the whitelisted keys.
 	var cleanProfiles []map[string]any
 	seenSuffix := map[string]struct{}{}
-	if raw, ok := upiProfile["profiles"].([]map[string]any); ok {
-		for _, p := range raw {
-			suffix, _ := p["suffix"].(string)
-			if suffix == "" {
-				continue
+	for _, p := range CoerceMaps(upiProfile["profiles"]) {
+		suffix, _ := p["suffix"].(string)
+		if suffix == "" {
+			continue
+		}
+		if _, dup := seenSuffix[suffix]; dup {
+			continue
+		}
+		seenSuffix[suffix] = struct{}{}
+		cp := map[string]any{}
+		for _, k := range []string{"user_exist", "suffix", "vpa", "name"} {
+			if v, ok := p[k]; ok {
+				cp[k] = v
 			}
-			if _, dup := seenSuffix[suffix]; dup {
-				continue
-			}
-			seenSuffix[suffix] = struct{}{}
-			cp := map[string]any{}
-			for _, k := range []string{"user_exist", "suffix", "vpa", "name"} {
-				if v, ok := p[k]; ok {
-					cp[k] = v
-				}
-			}
-			if len(cp) > 0 {
-				cleanProfiles = append(cleanProfiles, cp)
-			}
+		}
+		if len(cp) > 0 {
+			cleanProfiles = append(cleanProfiles, cp)
 		}
 	}
 	clean["profiles"] = cleanProfiles
 
-	if vn, ok := upiProfile["verified_names"].([]map[string]any); ok {
-		clean["verified_names"] = filterVerifiedNames(vn, vnCfg, emailVPAIDs)
+	// verified_names may arrive as []map[string]any (direct from the crawler) or
+	// []any (after the handler's JSON round-trip in transformResponse); CoerceMaps
+	// normalizes both. Only attach when the source key is present at all.
+	if _, present := upiProfile["verified_names"]; present {
+		clean["verified_names"] = filterVerifiedNames(CoerceMaps(upiProfile["verified_names"]), vnCfg, emailVPAIDs)
 	}
 	return clean
 }
@@ -125,6 +126,28 @@ func filterVerifiedNames(vns []map[string]any, cfg *VerifiedNamesConfig, emailVP
 // boolOrNilTrue reports whether a *bool is nil (absent -> treated as True per
 // Python `in [True, None]`) or explicitly true.
 func boolOrNilTrue(b *bool) bool { return b == nil || *b }
+
+// CoerceMaps normalizes a value that is logically a list-of-objects into
+// []map[string]any, tolerating both the direct crawler shape ([]map[string]any)
+// and the post-JSON-round-trip shape ([]any of map[string]any) that the
+// handler's transformResponse produces via json.Marshal/Unmarshal. Unknown
+// element types are skipped. Returns nil for nil/other inputs.
+func CoerceMaps(v any) []map[string]any {
+	switch t := v.(type) {
+	case []map[string]any:
+		return t
+	case []any:
+		out := make([]map[string]any, 0, len(t))
+		for _, e := range t {
+			if m, ok := e.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
 
 func toStringSlice(v any) []string {
 	switch t := v.(type) {

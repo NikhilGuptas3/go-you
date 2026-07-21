@@ -45,14 +45,13 @@ func transformUPIResponse(accountDetails map[string]any, ut *upiTransform) {
 		return
 	}
 	// Email-derived VPAs (match_type == "email") are exempt from the format
-	// filter; collect them from the raw profiles.
+	// filter; collect them from the raw profiles. Profiles may be []map[string]any
+	// (direct) or []any (after transformResponse's JSON round-trip).
 	emailVPAIDs := map[string]struct{}{}
-	if profs, ok := raw["profiles"].([]map[string]any); ok {
-		for _, p := range profs {
-			if mt, _ := p["match_type"].(string); mt == "email" {
-				if vpa, _ := p["vpa"].(string); vpa != "" {
-					emailVPAIDs[vpa] = struct{}{}
-				}
+	for _, p := range upi.CoerceMaps(raw["profiles"]) {
+		if mt, _ := p["match_type"].(string); mt == "email" {
+			if vpa, _ := p["vpa"].(string); vpa != "" {
+				emailVPAIDs[vpa] = struct{}{}
 			}
 		}
 	}
@@ -72,8 +71,8 @@ func transformUPIResponse(accountDetails map[string]any, ut *upiTransform) {
 // {user_exist: bool} (or {error:true} when none resolve), mirroring the
 // get_agg_upi_profile(phonepe_profiles) outcome the Python transform attaches.
 func derivePhonePe(raw map[string]any) map[string]any {
-	profs, ok := raw["profiles"].([]map[string]any)
-	if !ok {
+	profs := upi.CoerceMaps(raw["profiles"])
+	if profs == nil {
 		return map[string]any{"error": true}
 	}
 	sawTrue, sawFalse := false, false
