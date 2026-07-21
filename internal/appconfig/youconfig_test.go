@@ -79,6 +79,37 @@ func TestPhoneInfoAbsentDefaultsEnabled(t *testing.T) {
 	}
 }
 
+func TestIsPhoneInfoEnabledGate(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  string
+		want bool
+	}{
+		// phone_info block absent => enabled (prod default).
+		{"absent", `{"youConfig": {"websites": {}}}`, true},
+		// enabled key absent within the block => enabled.
+		{"block-no-enabled", `{"youConfig": {"phone_info": {"postpaid": true}}}`, true},
+		// explicit false => disabled (the reported config).
+		{"explicit-false", `{"youConfig": {"phone_info": {"enabled": false}}}`, false},
+		// explicit true => enabled.
+		{"explicit-true", `{"youConfig": {"phone_info": {"enabled": true}}}`, true},
+	}
+	for _, c := range cases {
+		yc, err := ParseYouConfig(c.cfg)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", c.name, err)
+		}
+		if got := yc.IsPhoneInfoEnabled(); got != c.want {
+			t.Errorf("%s: IsPhoneInfoEnabled()=%v want %v", c.name, got, c.want)
+		}
+		// When phone_info is disabled, postpaid must also be off regardless of the
+		// postpaid flag (matches is_postpaid_enabled).
+		if c.name == "explicit-false" && yc.IsPostpaidEnabled() {
+			t.Error("explicit-false: postpaid must be off when phone_info disabled")
+		}
+	}
+}
+
 func TestIsWebsiteEnabled(t *testing.T) {
 	yc := mustParse(t)
 	cases := []struct {

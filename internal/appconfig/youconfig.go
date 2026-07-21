@@ -121,9 +121,11 @@ func (yc *YouConfiguration) ClientResponse(website string) bool {
 	return *e.ClientResponse
 }
 
-// isPhoneInfoEnabled mirrors config_service.is_phone_info_enabled: absent =>
-// true; only an explicit enabled:false disables it.
-func (yc *YouConfiguration) isPhoneInfoEnabled() bool {
+// IsPhoneInfoEnabled mirrors config_service.is_phone_info_enabled: absent =>
+// true; only an explicit enabled:false disables it. When false the whole
+// phone-info lane (operator/circle/postpaid/revocations) is suppressed and
+// phone_meta is omitted from the response.
+func (yc *YouConfiguration) IsPhoneInfoEnabled() bool {
 	pi, ok := yc.PhoneInfo["enabled"]
 	if !ok {
 		return true
@@ -145,13 +147,13 @@ func (yc *YouConfiguration) isEmailInfoEnabled() bool {
 // IsPostpaidEnabled mirrors config_service.is_postpaid_enabled: phone_info
 // enabled AND phone_info.postpaid == true.
 func (yc *YouConfiguration) IsPostpaidEnabled() bool {
-	return yc.isPhoneInfoEnabled() && boolAt(yc.PhoneInfo, "postpaid")
+	return yc.IsPhoneInfoEnabled() && boolAt(yc.PhoneInfo, "postpaid")
 }
 
 // IsDndEnabled mirrors config_service.is_dnd_status_enabled. (dnd is always OUT
 // in go-you — EasyGoSms is token-pool — but the gate is modeled for parity.)
 func (yc *YouConfiguration) IsDndEnabled() bool {
-	return yc.isPhoneInfoEnabled() && boolAt(yc.PhoneInfo, "dnd_status")
+	return yc.IsPhoneInfoEnabled() && boolAt(yc.PhoneInfo, "dnd_status")
 }
 
 // IsDomainIntelligenceEnabled mirrors config_service.is_domain_intelligence_enabled:
