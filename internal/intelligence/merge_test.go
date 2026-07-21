@@ -31,21 +31,34 @@ func TestClassifyOutput(t *testing.T) {
 }
 
 func TestEvalCondition(t *testing.T) {
+	phone := map[string]any{"phone": map[string]any{"number": "9"}}
+	email := map[string]any{"email": "a@b.com"}
+	both := map[string]any{"phone": map[string]any{"number": "9"}, "email": "a@b.com"}
+	name := map[string]any{"name": "Ravi"}
+	phoneName := map[string]any{"phone": map[string]any{"number": "9"}, "name": "Ravi"}
+
 	cases := []struct {
-		cond               string
-		hasPhone, hasEmail bool
-		want               bool
+		cond string
+		req  map[string]any
+		want bool
 	}{
-		{"you_req_json.get('email') is not None", false, true, true},
-		{"you_req_json.get('email') is not None", true, false, false},
-		{"you_req_json.get('phone') is not None", true, false, true},
-		{"you_req_json.get('phone') is not None and you_req_json.get('email') is not None", true, true, true},
-		{"you_req_json.get('phone') is not None and you_req_json.get('email') is not None", true, false, false},
-		{"some_unknown_condition", true, true, false}, // fail closed
+		{"you_req_json.get('email') is not None", email, true},
+		{"you_req_json.get('email') is not None", phone, false},
+		{"you_req_json.get('phone') is not None", phone, true},
+		{"you_req_json.get('phone') is not None and you_req_json.get('email') is not None", both, true},
+		{"you_req_json.get('phone') is not None and you_req_json.get('email') is not None", phone, false},
+		// The condition that was failing closed in prod — a name-gated feature.
+		{"you_req_json.get('name') is not None", name, true},
+		{"you_req_json.get('name') is not None", phone, false},
+		{"you_req_json.get('phone') is not None and you_req_json.get('name') is not None", phoneName, true},
+		{"you_req_json.get('phone') is not None and you_req_json.get('name') is not None", name, false},
+		{`you_req_json.get("name") is not None`, name, true},    // double-quoted
+		{"some_unknown_condition", both, false},                 // fail closed
+		{"you_req_json.get('x') is not None or 1", both, false}, // `or` unsupported -> closed
 	}
 	for _, c := range cases {
-		if got := evalCondition(c.cond, c.hasPhone, c.hasEmail); got != c.want {
-			t.Errorf("evalCondition(%q, p=%v e=%v) = %v want %v", c.cond, c.hasPhone, c.hasEmail, got, c.want)
+		if got := evalCondition(c.cond, c.req); got != c.want {
+			t.Errorf("evalCondition(%q, %v) = %v want %v", c.cond, c.req, got, c.want)
 		}
 	}
 }
@@ -122,13 +135,15 @@ func TestBuildFeatureList(t *testing.T) {
 		"bnb_model_email":                       map[string]any{"condition": "you_req_json.get('email') is not None"},
 		"disabled_feature":                      map[string]any{},
 	}
+	phoneReq := map[string]any{"phone": map[string]any{"number": "9"}}
+	bothReq := map[string]any{"phone": map[string]any{"number": "9"}, "email": "a@b.com"}
 	// phone only => only the phone-conditioned feature.
-	got := buildFeatureList(tenant, global, true, false)
+	got := buildFeatureList(tenant, global, phoneReq)
 	if len(got) != 1 || got[0] != "onboarding_fraud_detection__default_1" {
 		t.Errorf("phone-only feature list = %v", got)
 	}
 	// both => both conditioned features.
-	got2 := buildFeatureList(tenant, global, true, true)
+	got2 := buildFeatureList(tenant, global, bothReq)
 	if len(got2) != 2 {
 		t.Errorf("both feature list = %v want 2", got2)
 	}

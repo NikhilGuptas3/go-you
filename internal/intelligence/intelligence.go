@@ -21,6 +21,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -96,7 +97,7 @@ func (s *Service) Run(ctx context.Context, in Input) Output {
 	tenantFeatureCfg, _ := ci["feature_list_config"].(map[string]any)
 	globalFeatureCfg, _ := mlCfg["feature_list_config"].(map[string]any)
 
-	featureList := buildFeatureList(tenantFeatureCfg, globalFeatureCfg, in.HasPhone, in.HasEmail)
+	featureList := buildFeatureList(tenantFeatureCfg, globalFeatureCfg, in.YouRequest)
 	if len(featureList) == 0 {
 		return out
 	}
@@ -213,8 +214,9 @@ func truncate(s string, n int) string {
 
 // buildFeatureList ports get_feature_list_from_config: a feature is included
 // when the tenant enables it, the global config knows it, and its condition
-// (evaluated against phone/email presence) passes.
-func buildFeatureList(tenantCfg, globalCfg map[string]any, hasPhone, hasEmail bool) []string {
+// passes. Conditions are evaluated against the actual request map (youReq), the
+// same value Python's eval() sees as you_req_json.
+func buildFeatureList(tenantCfg, globalCfg, youReq map[string]any) []string {
 	var out []string
 	for key, v := range tenantCfg {
 		entry, ok := v.(map[string]any)
@@ -226,7 +228,7 @@ func buildFeatureList(tenantCfg, globalCfg map[string]any, hasPhone, hasEmail bo
 			continue
 		}
 		if cond, ok := gEntry["condition"].(string); ok && cond != "" {
-			if !evalCondition(cond, hasPhone, hasEmail) {
+			if !evalCondition(cond, youReq) {
 				continue
 			}
 		}
@@ -235,21 +237,48 @@ func buildFeatureList(tenantCfg, globalCfg map[string]any, hasPhone, hasEmail bo
 	return out
 }
 
-// evalCondition safely evaluates the only three condition strings the prod
-// config uses. Unknown conditions fail closed (exclude the feature).
-func evalCondition(cond string, hasPhone, hasEmail bool) bool {
+// condFieldRe matches a single presence check of the form
+// `you_req_json.get('<field>') is not None` (single or double quotes).
+var condFieldRe = regexp.MustCompile(`you_req_json\.get\(\s*['"]([a-zA-Z0-9_]+)['"]\s*\)\s+is\s+not\s+None`)
+
+// evalCondition ports the eval(condition) of get_feature_list_from_config for
+// the observed condition grammar: one or more `you_req_json.get('<field>') is
+// not None` clauses joined by `and`. A field is "present" when the request map
+// carries a non-nil value for that key (mirroring dict.get(field) is not None).
+// This generalizes the previous phone/email-only handling to any request field
+// (e.g. name) so tenant configs that gate on other fields are honored instead of
+// being silently dropped. Truly unrecognized conditions fail closed.
+func evalCondition(cond string, youReq map[string]any) bool {
 	c := strings.TrimSpace(cond)
-	switch c {
-	case "you_req_json.get('email') is not None":
-		return hasEmail
-	case "you_req_json.get('phone') is not None":
-		return hasPhone
-	case "you_req_json.get('phone') is not None and you_req_json.get('email') is not None":
-		return hasPhone && hasEmail
-	default:
-		log.Printf("intelligence: unrecognized feature condition %q — excluding", cond)
+	// Only the `and`-joined presence grammar is supported; reject anything with
+	// `or`/`not `/comparisons we haven't verified.
+	if strings.Contains(c, " or ") || strings.Contains(c, "==") || strings.Contains(c, "!=") {
+		log.Printf("intelligence: unsupported feature condition %q — excluding", cond)
 		return false
 	}
+	clauses := strings.Split(c, " and ")
+	for _, clause := range clauses {
+		m := condFieldRe.FindStringSubmatch(strings.TrimSpace(clause))
+		if m == nil {
+			log.Printf("intelligence: unrecognized feature condition clause %q — excluding", clause)
+			return false
+		}
+		if !requestFieldPresent(youReq, m[1]) {
+			return false
+		}
+	}
+	return len(clauses) > 0
+}
+
+// requestFieldPresent reports whether youReq[field] is present and non-nil,
+// matching Python's `you_req_json.get(field) is not None`. The request map is
+// the null-stripped JSON of PersonaRequest, so absent fields are missing keys.
+func requestFieldPresent(youReq map[string]any, field string) bool {
+	if youReq == nil {
+		return false
+	}
+	v, ok := youReq[field]
+	return ok && v != nil
 }
 
 func boolAt(m map[string]any, key string) bool {
