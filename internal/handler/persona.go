@@ -326,12 +326,18 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm 
 	if intel := phoneStaticIntelligence(yc, static, phoneMeta); intel != nil {
 		sec.IntelligenceData = intel
 	}
+	// Attach static_data so it flows into the ml_service payload (prod parity).
+	// transform (remove_static_data) strips it from the client response.
+	if len(static) > 0 {
+		sec.StaticData = static
+	}
 	return sec
 }
 
 // phoneStaticNeeded reports whether any phone signal that consumes static_data is
-// enabled (breach OR digital_age OR linked_ids), so we skip the DB round-trip
-// when none are.
+// enabled — breach OR digital_age OR linked_ids OR the ml_service lane (which now
+// receives static_data in its payload) — so we skip the DB round-trip when none
+// are.
 func phoneStaticNeeded(yc *appconfig.YouConfiguration) bool {
 	if breachOn(yc) {
 		return true
@@ -339,7 +345,8 @@ func phoneStaticNeeded(yc *appconfig.YouConfiguration) bool {
 	if yc == nil {
 		return false
 	}
-	return yc.IntelligenceBool("digital_age") || yc.IntelligenceBool("linked_ids")
+	return yc.IntelligenceBool("digital_age") || yc.IntelligenceBool("linked_ids") ||
+		yc.IsCommonIntelligenceEnabled()
 }
 
 // phoneStaticIntelligence builds the section intelligence_data derived from
@@ -438,13 +445,21 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timin
 	if intel := emailStaticIntelligence(yc, static, breachDet); intel != nil {
 		sec.IntelligenceData = intel
 	}
+	// Attach static_data for the ml_service payload; transform strips it client-side.
+	if len(static) > 0 {
+		sec.StaticData = static
+	}
 	return sec
 }
 
-// emailStaticNeeded reports whether the email branch needs static_data. Only
-// linked_ids consumes it (email digital_age uses breach dates, not static).
+// emailStaticNeeded reports whether the email branch needs static_data: linked_ids
+// consumes it (email digital_age uses breach dates, not static), and the ml_service
+// lane now receives static_data in its payload.
 func emailStaticNeeded(yc *appconfig.YouConfiguration) bool {
-	return yc != nil && yc.IntelligenceBool("linked_ids")
+	if yc == nil {
+		return false
+	}
+	return yc.IntelligenceBool("linked_ids") || yc.IsCommonIntelligenceEnabled()
 }
 
 // emailStaticIntelligence builds the email section intelligence_data: digital_age

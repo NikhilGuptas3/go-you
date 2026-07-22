@@ -104,6 +104,11 @@ func transformResponse(resp *model.PersonaResponse, yc *appconfig.YouConfigurati
 //  5. remove_upi_responses: drop the UPI entry unless UPI CLIENT_RESPONSE is on
 //  6. recompute social_profile_count over what remains
 func transformSection(sec map[string]any, yc *appconfig.YouConfiguration, ut *upiTransform) {
+	// remove_static_data: static_data is sent to ml_service (built from resp before
+	// this transform runs) but must never reach the client. Strip it unconditionally,
+	// before any early return, so it can't leak even if primary_data is absent.
+	delete(sec, "static_data")
+
 	pd, ok := sec["primary_data"].(map[string]any)
 	if !ok {
 		return

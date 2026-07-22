@@ -17,8 +17,17 @@ type Config struct {
 	// HTTP server
 	Port string
 
-	// MySQL (RDS Aurora) — the tenantapp table lives here.
+	// MySQL (RDS Aurora) — the tenantapp + configs tables live here (the `user`
+	// DB on the `main` cluster).
 	MySQLDSN string
+
+	// StaticMySQLDSN points at the SEPARATE MySQL that holds the inorganic/static
+	// persona tables (Python's SQL_YOU pool: the `you` DB on the `you` cluster —
+	// a different host+db+credential than MySQLDSN). Optional: empty => the static
+	// lane is disabled (nil repo) and phone breach / static digital_age / linked_ids
+	// degrade to empty/error. The static tables do NOT exist on the MySQLDSN DB, so
+	// this must be set for those signals to work.
+	StaticMySQLDSN string
 
 	// ProxyURL is an optional single upstream proxy for all crawlers, e.g.
 	// "http://user:pass@host:port". Empty => crawl direct (no proxy). The POC
@@ -58,12 +67,13 @@ func Load() (*Config, error) {
 	}
 
 	c := &Config{
-		Port:        getEnv("PORT", "5000"),
-		MySQLDSN:    req("MYSQL_DSN"),
-		ProxyURL:    os.Getenv("PROXY_URL"),  // optional; empty => crawl direct
-		IPQSToken:   os.Getenv("IPQS_TOKEN"), // optional; empty => skip meta
-		Namespace:   os.Getenv("NAMESPACE"),  // optional; drives configs_<ns> override
-		HTTPTimeout: time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
+		Port:           getEnv("PORT", "5000"),
+		MySQLDSN:       req("MYSQL_DSN"),
+		StaticMySQLDSN: os.Getenv("STATIC_MYSQL_DSN"), // optional; empty => static lane off
+		ProxyURL:       os.Getenv("PROXY_URL"),        // optional; empty => crawl direct
+		IPQSToken:      os.Getenv("IPQS_TOKEN"),       // optional; empty => skip meta
+		Namespace:      os.Getenv("NAMESPACE"),        // optional; drives configs_<ns> override
+		HTTPTimeout:    time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
 	}
 
 	if len(missing) > 0 {

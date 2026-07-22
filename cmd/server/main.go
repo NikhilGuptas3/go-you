@@ -167,14 +167,38 @@ func main() {
 		log.Printf("meta + breach + intelligence disabled (LOCAL_DEV: no config fetcher)")
 	}
 
-	// --- Static persona repo (MySQL): feeds phone breach, digital_age, linked_ids.
-	// Reuses the same *sql.DB as auth/config. nil in LOCAL_DEV → those signals
-	// degrade to empty/error (staticdata.New returns nil for a nil db). ---
-	staticRepo := staticdata.New(db)
+	// --- Static persona repo: feeds phone breach, digital_age, linked_ids, and
+	// (Part B) the static_data attached to the ml_service payload.
+	//
+	// The static tables live on a DIFFERENT MySQL than tenant/config (Python's
+	// SQL_YOU: the `you` DB on the `you` cluster). We open a SECOND pool from
+	// STATIC_MYSQL_DSN rather than reusing `db` (whose `user`/`main` DB does NOT
+	// contain the static tables). Best-effort: a ping failure logs and continues
+	// (static is degradable, never fatal). Empty DSN / LOCAL_DEV → nil repo. ---
+	var staticDB *sql.DB
+	if !localDev && cfg.StaticMySQLDSN != "" {
+		staticDB, err = sql.Open("mysql", cfg.StaticMySQLDSN)
+		if err != nil {
+			log.Printf("static mysql open failed (static lane disabled): %v", err)
+			staticDB = nil
+		} else {
+			staticDB.SetMaxOpenConns(20)
+			staticDB.SetMaxIdleConns(10)
+			staticDB.SetConnMaxLifetime(5 * time.Minute)
+			if err := staticDB.Ping(); err != nil {
+				log.Printf("static mysql ping failed (static lane disabled): %v", err)
+				_ = staticDB.Close()
+				staticDB = nil
+			} else {
+				defer staticDB.Close()
+			}
+		}
+	}
+	staticRepo := staticdata.New(staticDB)
 	if staticRepo != nil {
-		log.Printf("static persona repo enabled (phone breach + digital_age + linked_ids)")
+		log.Printf("static persona repo enabled (phone breach + digital_age + linked_ids + ml static_data)")
 	} else {
-		log.Printf("static persona repo disabled (no DB): phone breach empty, digital_age error")
+		log.Printf("static persona repo disabled (no STATIC_MYSQL_DSN): phone breach empty, digital_age error")
 	}
 
 	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg)

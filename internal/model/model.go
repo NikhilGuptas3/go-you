@@ -55,9 +55,14 @@ type Section struct {
 	PrimaryData      *PrimaryData      `json:"primary_data,omitempty"`
 	LinkedData       *PrimaryData      `json:"linked_data,omitempty"`
 	IntelligenceData *IntelligenceData `json:"intelligence_data,omitempty"`
-	StatusCode       int               `json:"status_code"`
-	Status           string            `json:"status"`
-	ErrorMsg         string            `json:"error_msg,omitempty"`
+	// StaticData is the inorganic/static persona document ({source:[{payload}]}).
+	// It is included in the ml_service payload (prod parity: YouResponseByType.
+	// static_data) but STRIPPED from the client response by transform
+	// (remove_static_data). nil/absent when the static lane is off or empty.
+	StaticData map[string]any `json:"static_data,omitempty"`
+	StatusCode int            `json:"status_code"`
+	Status     string         `json:"status"`
+	ErrorMsg   string         `json:"error_msg,omitempty"`
 }
 
 type PrimaryData struct {
