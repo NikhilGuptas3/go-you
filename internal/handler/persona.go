@@ -168,7 +168,7 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// prediction. Gated on tenant common_intelligence.enabled inside the service.
 	if h.intel != nil && yc != nil && yc.IsCommonIntelligenceEnabled() {
 		intelStart := time.Now()
-		h.applyIntelligence(ctx, &req, &resp, yc)
+		h.applyIntelligence(ctx, &req, &resp, yc, tenantID)
 		tm.since("intelligence", intelStart)
 	}
 
@@ -573,14 +573,21 @@ func normalizePhone(countryCode, number string) string {
 // later by the transform's cleanup_prediction). The you_request/you_response
 // payloads are the response marshalled to maps and null-stripped, matching the
 // Python payload construction.
-func (h *Persona) applyIntelligence(ctx context.Context, req *model.PersonaRequest, resp *model.PersonaResponse, yc *appconfig.YouConfiguration) {
+func (h *Persona) applyIntelligence(ctx context.Context, req *model.PersonaRequest, resp *model.PersonaResponse, yc *appconfig.YouConfiguration, tenantID string) {
 	youResponse := toStrippedMap(resp)
 	youRequest := toStrippedMap(req)
 
 	out := h.intel.Run(ctx, intelligence.Input{
-		HasPhone:           req.Phone != nil,
-		HasEmail:           req.Email != "",
-		Tenant:             "", // filled by the caller's tenant id if needed; ml payload tolerates ""
+		HasPhone: req.Phone != nil,
+		HasEmail: req.Email != "",
+		// Tenant is the authenticated tenant username (tenantapp.id), matching
+		// Python's payload["tenant"] = request_context.tenant_app[0]
+		// (you_service_aggregator.get_intelligence). ml_service's FEATURE_ENGINE
+		// feature store is tenant-scoped: an empty tenant makes every
+		// FEATURE_ENGINE feature resolve to {error:true} while the (non-tenant-
+		// scoped) PREDICTION model still returns a score — exactly the split
+		// observed when this was sent as "".
+		Tenant:             tenantID,
 		CommonIntelligence: yc.CommonIntelligence,
 		YouRequest:         youRequest,
 		YouResponse:        youResponse,
