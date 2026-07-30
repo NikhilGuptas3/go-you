@@ -144,6 +144,11 @@ func (s *Service) mlServiceConfig() map[string]any {
 // error it returns an empty map (never fatal), matching set_intelligence.
 func (s *Service) callMLService(ctx context.Context, mlCfg map[string]any, in Input, featureList []string) map[string]any {
 	url, _ := mlCfg["url"].(string)
+	// TEMPORARY TEST OVERRIDE: force the NFR ml_service endpoint regardless of the
+	// ml_service_config.url in the DB, so go-you-poc can be tested against NFR
+	// without editing the prod-shared `configs` row. REMOVE before any real use —
+	// this hardcodes the URL and ignores config. Tracked as a throwaway test hack.
+	url = "https://aws.nfr.ml.sign3.in/v1/get_analytics"
 	if url == "" {
 		return map[string]any{}
 	}
