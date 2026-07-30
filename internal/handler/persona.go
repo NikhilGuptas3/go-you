@@ -577,6 +577,17 @@ func (h *Persona) applyIntelligence(ctx context.Context, req *model.PersonaReque
 	youResponse := toStrippedMap(resp)
 	youRequest := toStrippedMap(req)
 
+	// ml_service expects account_details as an OBJECT keyed by website
+	// (you_response['phone_data']['primary_data']['account_details']['SKYPE']), the
+	// same shape Python sends (account_details is a dict in the you_response before
+	// the ml call). go-you carries it as a LIST in the model and only converts to a
+	// map in transform (client path), so the ml payload built from the raw response
+	// must be keyed here too — otherwise ml_service's .get('SITE') hits a list and
+	// every FEATURE_ENGINE feature dies with "'list' object has no attribute 'get'".
+	// Unlike transform, we keep the FULL crawl (no client_response/UPI drops): the ml
+	// model reads the complete persona.
+	keyAccountDetailsForML(youResponse)
+
 	out := h.intel.Run(ctx, intelligence.Input{
 		HasPhone: req.Phone != nil,
 		HasEmail: req.Email != "",
@@ -613,6 +624,43 @@ func (h *Persona) applyIntelligence(ctx context.Context, req *model.PersonaReque
 			// output_key_name (default identity_fraud_score) in Phase 6.
 			resp.Prediction = map[string]any{"predicted_score": *out.PredictionScore}
 		}
+	}
+}
+
+// keyAccountDetailsForML rewrites phone_data/email_data primary_data.account_details
+// from the go-you list form ([{_website, user_exist, ...}]) into the website-keyed
+// map form ({"FLIPKART": {user_exist, ...}}) that ml_service reads. It mutates the
+// stripped ml-payload map in place. The full crawl set is preserved (no client-side
+// drops) — the ml model consumes every site. The per-entry "_website" hint is
+// removed, matching the client transform and the Python dict shape.
+func keyAccountDetailsForML(you map[string]any) {
+	for _, sec := range []string{"phone_data", "email_data"} {
+		s, ok := you[sec].(map[string]any)
+		if !ok {
+			continue
+		}
+		pd, ok := s["primary_data"].(map[string]any)
+		if !ok {
+			continue
+		}
+		list, ok := pd["account_details"].([]any)
+		if !ok {
+			continue // already a map or absent
+		}
+		m := make(map[string]any, len(list))
+		for _, e := range list {
+			entry, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := entry["_website"].(string)
+			if name == "" {
+				continue
+			}
+			delete(entry, "_website")
+			m[name] = entry
+		}
+		pd["account_details"] = m
 	}
 }
 
