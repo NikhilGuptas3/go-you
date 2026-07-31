@@ -7,13 +7,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sign3labs/go-you/internal/analytics"
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
 	"github.com/sign3labs/go-you/internal/breach"
@@ -21,8 +24,10 @@ import (
 	"github.com/sign3labs/go-you/internal/crawler/upi"
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
+	"github.com/sign3labs/go-you/internal/metacache"
 	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
+	"github.com/sign3labs/go-you/internal/personacache"
 	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
@@ -64,13 +69,23 @@ type Persona struct {
 	// digital_age, linked_ids). nil in LOCAL_DEV / when no DB — the derived
 	// signals then degrade to their empty/error forms.
 	static *staticdata.Repo
+	// pcache is the DynamoDB OrganicData persona cache (read-before-crawl,
+	// write-after). nil => caching off (always crawl). Gated per-tenant by
+	// youConfig.caching.
+	pcache *personacache.Repo
+	// mcache is the DynamoDB EmailPhoneMeta cache for the phone/email meta lane.
+	// nil => meta caching off. Gated by phone_info.caching / email_info.caching.
+	mcache *metacache.Repo
+	// sink is the Kinesis analytics sink (fire-and-forget, one event per request).
+	// nil => analytics off.
+	sink *analytics.Sink
 	// cfg is the ConfigFetcher (per-tenant youConfig gates, global settings).
 	// nil in LOCAL_DEV where MySQL — and therefore the configs table — is absent.
 	cfg *appconfig.Fetcher
 }
 
-func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher) *Persona {
-	return &Persona{runner: runner, phoneMeta: phoneMeta, emailMeta: emailMeta, breach: breachSvc, intel: intel, static: static, cfg: cfg}
+func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher, pcache *personacache.Repo, mcache *metacache.Repo, sink *analytics.Sink) *Persona {
+	return &Persona{runner: runner, phoneMeta: phoneMeta, emailMeta: emailMeta, breach: breachSvc, intel: intel, static: static, pcache: pcache, mcache: mcache, sink: sink, cfg: cfg}
 }
 
 // breachOn reports whether the breach lane runs (tenant breach flag; nil => on).
@@ -140,19 +155,44 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// with permissive defaults so the service still works without a configs table.
 	yc, phoneSites, emailSites := h.resolveConfig(tenant)
 
+	// Persona cache (DynamoDB OrganicData): read before crawling. Gated by
+	// youConfig.caching. A hit replays the cached section and skips that section's
+	// crawl entirely (mirroring get_organic_persona → skip get_persona_by_type).
+	// Phone and email cache independently under separate keys (two primary_cache_ids).
+	now := time.Now().Unix()
+	cacheOn := h.pcache != nil && yc.IsCachingEnabled()
+	var phoneKey, emailKey string
+	var phoneHit, emailHit bool
+	if cacheOn {
+		if req.Phone != nil {
+			phoneKey = h.pcache.Key("phone", normalizePhone(req.Phone.CountryCode, req.Phone.Number), tenantID)
+			if cached, hit, err := h.pcache.Get(ctx, phoneKey, now); err == nil && hit {
+				resp.PhoneData, phoneHit = cached.PhoneData, true
+				tm.record("cache_phone", 0)
+			}
+		}
+		if req.Email != "" {
+			emailKey = h.pcache.Key("email", req.Email, tenantID)
+			if cached, hit, err := h.pcache.Get(ctx, emailKey, now); err == nil && hit {
+				resp.EmailData, emailHit = cached.EmailData, true
+				tm.record("cache_email", 0)
+			}
+		}
+	}
+
 	// Phone branch and email branch run concurrently; within each, the crawler
 	// fan-out and the meta lookup run concurrently too — matching Python's
-	// per-branch parallel sub-tasks.
+	// per-branch parallel sub-tasks. A section that hit the cache is NOT re-crawled.
 	fanoutStart := time.Now()
 	var wg sync.WaitGroup
-	if req.Phone != nil {
+	if req.Phone != nil && !phoneHit {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			resp.PhoneData = h.buildPhoneSection(ctx, req.Phone, tm, phoneSites, yc)
 		}()
 	}
-	if req.Email != "" {
+	if req.Email != "" && !emailHit {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -161,6 +201,21 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 	tm.since("fanout_total", fanoutStart)
+
+	// Persona cache write-back: persist freshly-crawled sections (cache miss only)
+	// fire-and-forget. Each section is stored under its own key as a single-section
+	// PersonaResponse, matching the per-type Python write. Skipped when the section
+	// hit the cache (nothing new) or caching is off.
+	if cacheOn {
+		if resp.PhoneData != nil && !phoneHit {
+			sec := resp.PhoneData
+			go func() { _ = h.pcache.Put(context.Background(), phoneKey, &model.PersonaResponse{PhoneData: sec}, now) }()
+		}
+		if resp.EmailData != nil && !emailHit {
+			sec := resp.EmailData
+			go func() { _ = h.pcache.Put(context.Background(), emailKey, &model.PersonaResponse{EmailData: sec}, now) }()
+		}
+	}
 
 	// Intelligence (remote ml_service) runs after both sections resolve — it
 	// sends the assembled response + request to ml_service and merges the score
@@ -184,12 +239,78 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// (See transform.go for the full rule set.)
 	metaParam := r.URL.Query().Has("meta")
 	ut := resolveUPITransform(h.upiConfig(), yc)
+	// Build the ml-payload-shaped response BEFORE transform for the analytics
+	// analytic_response field (the closest analogue to Python's filtered response),
+	// while transformResponse produces the client `out`.
+	analyticResp := toStrippedMap(&resp)
 	out := transformResponse(&resp, yc, metaParam, ut)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Server-Timing", tm.serverTimingHeader())
 	w.Header().Set("you_time", fmt.Sprintf("%f", time.Since(start).Seconds()))
 	_ = json.NewEncoder(w).Encode(out)
+
+	// Analytics (Kinesis): fire-and-forget after the response is flushed. The sink
+	// swallows all errors, so this can never affect the client. nil sink => no-op.
+	if h.sink != nil {
+		apiTime := time.Since(start).Seconds()
+		go h.sink.Push(context.Background(), h.buildAnalyticsEvent(r, requestID, tenantID, &req, out, analyticResp, apiTime))
+	}
+}
+
+// buildAnalyticsEvent assembles the Kinesis event for a persona request, porting
+// create_analytic_event. request carries the raw identifiers (the sink md5-hashes
+// email/phone in place before publish); response is the final client shape;
+// analyticResponse is the pre-transform stripped response. Headers are the subset
+// go-you has (Flask carries more; the extras are omitted, not consumed downstream).
+func (h *Persona) buildAnalyticsEvent(r *http.Request, requestID, tenantID string, req *model.PersonaRequest, out, analyticResp map[string]any, apiTime float64) analytics.Event {
+	return analytics.Event{
+		RequestID:        requestID,
+		TenantID:         tenantID,
+		Headers:          analyticsHeaders(r),
+		Request:          toStrippedMap(req),
+		LoggingContext:   map[string]any{"client_ip": clientIP(r)},
+		Response:         out,
+		AnalyticResponse: analyticResp,
+		Timestamp:        time.Now().UTC().Format("2006-01-02T15:04:05.000000"),
+		EventName:        analytics.EventName,
+		Namespace:        os.Getenv("NAMESPACE"),
+		ClientReqStr:     "",
+		APITimeTaken:     roundTo(apiTime, 3),
+	}
+}
+
+// analyticsHeaders extracts the request headers the analytics event records (the
+// subset go-you receives behind the ingress).
+func analyticsHeaders(r *http.Request) map[string]string {
+	h := map[string]string{}
+	for _, k := range []string{"X-Request-Id", "X-Real-Ip", "X-Forwarded-For", "User-Agent", "Referer", "X-Original-Forwarded-For"} {
+		if v := r.Header.Get(k); v != "" {
+			h[k] = v
+		}
+	}
+	return h
+}
+
+// clientIP returns the best-effort client IP from the standard proxy headers,
+// falling back to RemoteAddr.
+func clientIP(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i > 0 {
+			return strings.TrimSpace(v[:i])
+		}
+		return strings.TrimSpace(v)
+	}
+	if v := r.Header.Get("X-Real-Ip"); v != "" {
+		return v
+	}
+	return r.RemoteAddr
+}
+
+// roundTo rounds x to n decimal places (matches Python round(_, 3)).
+func roundTo(x float64, n int) float64 {
+	p := math.Pow(10, float64(n))
+	return math.Round(x*p) / p
 }
 
 // resolveConfig parses the tenant youConfig and derives the per-kind crawl
@@ -288,6 +409,21 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm 
 		go func() {
 			defer inner.Done()
 			metaStart := time.Now()
+			// Meta cache (EmailPhoneMeta) read: keyed by the international number.
+			// A hit replays the stored PhoneMeta and skips the meta RPCs.
+			if h.mcache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
+				if raw, hit, err := h.mcache.Get(ctx, identifier, time.Now().Unix()); err == nil && hit {
+					var pm model.PhoneMeta
+					if json.Unmarshal(raw, &pm) == nil {
+						if pm.Revocations == nil {
+							pm.Revocations = map[string]any{}
+						}
+						phoneMeta = &pm
+						tm.record("meta_cache_phone", 0)
+						return
+					}
+				}
+			}
 			national := nationalFromIdentifier(identifier)
 			r := h.phoneMeta.Fetch(ctx, national, identifier, postpaidOn(yc))
 			tm.since("meta_phone", metaStart)
@@ -303,6 +439,11 @@ func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm 
 				Circle:      r.Circle,
 				Postpaid:    r.Postpaid,
 				Revocations: revocations,
+			}
+			// Write-back fire-and-forget.
+			if h.mcache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
+				pm := phoneMeta
+				go func() { _ = h.mcache.Put(context.Background(), identifier, pm, time.Now().Unix()) }()
 			}
 		}()
 	}
@@ -411,6 +552,17 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timin
 		go func() {
 			defer inner.Done()
 			metaStart := time.Now()
+			// Meta cache (EmailPhoneMeta) read: keyed by the email address.
+			if h.mcache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
+				if raw, hit, err := h.mcache.Get(ctx, email, time.Now().Unix()); err == nil && hit {
+					var em model.EmailMeta
+					if json.Unmarshal(raw, &em) == nil {
+						emailMeta = &em
+						tm.record("meta_cache_email", 0)
+						return
+					}
+				}
+			}
 			r := h.emailMeta.Fetch(ctx, email)
 			tm.since("meta_email", metaStart)
 			em := &model.EmailMeta{Email: email, IsDisposable: r.IsDisposable}
@@ -418,6 +570,11 @@ func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timin
 				em.DomainAttributes = domainAttrsToModel(r.DomainAttributes)
 			}
 			emailMeta = em
+			// Write-back fire-and-forget.
+			if h.mcache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
+				m := em
+				go func() { _ = h.mcache.Put(context.Background(), email, m, time.Now().Unix()) }()
+			}
 		}()
 	}
 

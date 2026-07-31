@@ -31,3 +31,42 @@ func (a AccountDetails) MarshalJSON() ([]byte, error) {
 	}
 	return json.Marshal(out)
 }
+
+// UnmarshalJSON is the inverse of MarshalJSON: it reads a flattened account entry
+// back into the typed fields (user_exist, error_msg, _website) and collects every
+// other key into Data. This makes AccountDetails round-trip through JSON, which
+// the persona cache relies on (it stores the marshalled response and decodes it
+// back). Keys consumed by typed fields are NOT duplicated into Data.
+func (a *AccountDetails) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["_website"]; ok {
+		_ = json.Unmarshal(v, &a.Website)
+		delete(raw, "_website")
+	}
+	if v, ok := raw["user_exist"]; ok {
+		var ue bool
+		if json.Unmarshal(v, &ue) == nil {
+			a.UserExist = &ue
+		}
+		delete(raw, "user_exist")
+	}
+	if v, ok := raw["error_msg"]; ok {
+		_ = json.Unmarshal(v, &a.ErrorMsg)
+		delete(raw, "error_msg")
+	}
+	// Everything remaining is rich per-site data.
+	if len(raw) > 0 {
+		a.Data = make(map[string]any, len(raw))
+		for k, v := range raw {
+			var val any
+			if err := json.Unmarshal(v, &val); err != nil {
+				return err
+			}
+			a.Data[k] = val
+		}
+	}
+	return nil
+}

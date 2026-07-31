@@ -21,8 +21,10 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/sign3labs/go-you/internal/analytics"
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
+	"github.com/sign3labs/go-you/internal/awsclients"
 	"github.com/sign3labs/go-you/internal/breach"
 	"github.com/sign3labs/go-you/internal/config"
 	"github.com/sign3labs/go-you/internal/crawler"
@@ -30,6 +32,8 @@ import (
 	"github.com/sign3labs/go-you/internal/handler"
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
+	"github.com/sign3labs/go-you/internal/metacache"
+	"github.com/sign3labs/go-you/internal/personacache"
 	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
@@ -201,7 +205,39 @@ func main() {
 		log.Printf("static persona repo disabled (no STATIC_MYSQL_DSN): phone breach empty, digital_age error")
 	}
 
-	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg)
+	// --- AWS services (optional): DynamoDB persona + meta caches, Kinesis
+	// analytics sink. All best-effort: the SDK config loads region+credentials
+	// from the default chain (AWS_REGION / AWS_ACCESS_KEY_ID / IAM role). Each
+	// service is enabled only when its table/stream env var is set AND the client
+	// constructed. Unset => nil repo/sink => go-you stays stateless (always crawl,
+	// no analytics), matching the static-repo degradation contract. LOCAL_DEV
+	// disables all three. ---
+	var personaCache *personacache.Repo
+	var metaCache *metacache.Repo
+	var analyticsSink *analytics.Sink
+	if !localDev && (cfg.DynamoOrganicTable != "" || cfg.DynamoMetaTable != "" || cfg.KinesisStream != "") {
+		ctx := context.Background()
+		if cfg.DynamoOrganicTable != "" || cfg.DynamoMetaTable != "" {
+			dynamo := awsclients.NewDynamo(ctx)
+			personaCache = personacache.New(dynamo, cfg.DynamoOrganicTable)
+			metaCache = metacache.New(dynamo, cfg.DynamoMetaTable)
+		}
+		if cfg.KinesisStream != "" {
+			analyticsSink = analytics.New(awsclients.NewKinesis(ctx), cfg.KinesisStream)
+		}
+	}
+	logEnabled := func(name string, on bool) {
+		if on {
+			log.Printf("%s enabled", name)
+		} else {
+			log.Printf("%s disabled", name)
+		}
+	}
+	logEnabled("persona cache (DynamoDB OrganicData)", personaCache != nil)
+	logEnabled("meta cache (DynamoDB EmailPhoneMeta)", metaCache != nil)
+	logEnabled("analytics sink (Kinesis)", analyticsSink != nil)
+
+	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg, personaCache, metaCache, analyticsSink)
 
 	// --- Router ---
 	r := chi.NewRouter()

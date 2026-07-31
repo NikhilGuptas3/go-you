@@ -29,6 +29,17 @@ type Config struct {
 	// this must be set for those signals to work.
 	StaticMySQLDSN string
 
+	// DynamoOrganicTable / DynamoMetaTable name go-you's OWN DynamoDB tables for
+	// the OrganicData persona cache and the EmailPhoneMeta cache (separate from
+	// prod's tables). KinesisStream names go-you's analytics stream. All optional:
+	// empty => that service is disabled and go-you keeps its stateless behavior
+	// (always crawl, no analytics). AWS region + credentials are NOT read here —
+	// the SDK default chain (AWS_REGION / AWS_ACCESS_KEY_ID / ... / IAM role)
+	// resolves them, exactly like boto3.
+	DynamoOrganicTable string
+	DynamoMetaTable    string
+	KinesisStream      string
+
 	// ProxyURL is an optional single upstream proxy for all crawlers, e.g.
 	// "http://user:pass@host:port". Empty => crawl direct (no proxy). The POC
 	// deliberately does NOT use the Redis-backed rotating pool; one static
@@ -67,13 +78,16 @@ func Load() (*Config, error) {
 	}
 
 	c := &Config{
-		Port:           getEnv("PORT", "5000"),
-		MySQLDSN:       req("MYSQL_DSN"),
-		StaticMySQLDSN: os.Getenv("STATIC_MYSQL_DSN"), // optional; empty => static lane off
-		ProxyURL:       os.Getenv("PROXY_URL"),        // optional; empty => crawl direct
-		IPQSToken:      os.Getenv("IPQS_TOKEN"),       // optional; empty => skip meta
-		Namespace:      os.Getenv("NAMESPACE"),        // optional; drives configs_<ns> override
-		HTTPTimeout:    time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
+		Port:               getEnv("PORT", "5000"),
+		MySQLDSN:           req("MYSQL_DSN"),
+		StaticMySQLDSN:     os.Getenv("STATIC_MYSQL_DSN"),     // optional; empty => static lane off
+		DynamoOrganicTable: os.Getenv("DYNAMO_ORGANIC_TABLE"), // optional; empty => persona cache off
+		DynamoMetaTable:    os.Getenv("DYNAMO_META_TABLE"),    // optional; empty => meta cache off
+		KinesisStream:      os.Getenv("KINESIS_STREAM_NAME"),  // optional; empty => analytics off
+		ProxyURL:           os.Getenv("PROXY_URL"),            // optional; empty => crawl direct
+		IPQSToken:          os.Getenv("IPQS_TOKEN"),           // optional; empty => skip meta
+		Namespace:          os.Getenv("NAMESPACE"),            // optional; drives configs_<ns> override
+		HTTPTimeout:        time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
 	}
 
 	if len(missing) > 0 {

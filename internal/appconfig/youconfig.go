@@ -174,6 +174,36 @@ func (yc *YouConfiguration) IsCommonIntelligenceEnabled() bool {
 	return boolAt(yc.CommonIntelligence, "enabled")
 }
 
+// IsCachingEnabled reports youConfig.caching == true — the gate for the
+// OrganicData persona cache (you_service_aggregator: caching read/write only when
+// request_context.you_configuration.caching). Defaults to false when absent: the
+// POC was stateless, and only a tenant that explicitly opts in gets caching.
+func (yc *YouConfiguration) IsCachingEnabled() bool {
+	if yc == nil {
+		return false
+	}
+	return boolAt(yc.raw, "caching")
+}
+
+// IsPhoneInfoCachingEnabled reports phone_info.caching == true — the gate for the
+// EmailPhoneMeta cache on the phone side (Python is_phone_info_caching_enabled,
+// AND-ed with the global caching flag which this method folds in). Absent => false.
+func (yc *YouConfiguration) IsPhoneInfoCachingEnabled() bool {
+	if yc == nil {
+		return false
+	}
+	return boolAt(yc.PhoneInfo, "caching")
+}
+
+// IsEmailInfoCachingEnabled reports email_info.caching == true — the EmailPhoneMeta
+// cache gate on the email side (Python is_email_info_caching_enabled). Absent => false.
+func (yc *YouConfiguration) IsEmailInfoCachingEnabled() bool {
+	if yc == nil {
+		return false
+	}
+	return boolAt(yc.EmailInfo, "caching")
+}
+
 // OnboardingFraudOutputKey returns the tenant's configured output_key_name for
 // the onboarding_fraud_detection score, and whether the score-rename should run.
 // Mirrors response_mapper.cleanup_prediction (response_mapper.py:259-275):
