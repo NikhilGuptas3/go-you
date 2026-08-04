@@ -7,12 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,8 +17,8 @@ import (
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
 	"github.com/sign3labs/go-you/internal/breach"
+	"github.com/sign3labs/go-you/internal/commondata"
 	"github.com/sign3labs/go-you/internal/crawler"
-	"github.com/sign3labs/go-you/internal/crawler/upi"
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
 	"github.com/sign3labs/go-you/internal/metacache"
@@ -59,48 +56,31 @@ const (
 	statusMultiFieldError  = "MULTI_FIELD_ERROR"
 )
 
+// Persona is the HTTP transport layer for POST /v1/persona. It owns the
+// application service (Orchestrator) and the analytics sink, and does only
+// transport work: decode → validate → deadline → Orchestrator.Build → transform
+// → encode → fire-and-forget analytics. All fan-out/business logic lives in the
+// Orchestrator (orchestrator.go).
 type Persona struct {
-	runner    *crawler.Runner
-	phoneMeta *meta.PhoneMetaService
-	emailMeta *meta.EmailMetaService
-	breach    *breach.Service
-	intel     *intelligence.Service
-	// static is the MySQL-backed static-persona repo (feeds phone breach,
-	// digital_age, linked_ids). nil in LOCAL_DEV / when no DB — the derived
-	// signals then degrade to their empty/error forms.
-	static *staticdata.Repo
-	// pcache is the DynamoDB OrganicData persona cache (read-before-crawl,
-	// write-after). nil => caching off (always crawl). Gated per-tenant by
-	// youConfig.caching.
-	pcache *personacache.Repo
-	// mcache is the DynamoDB EmailPhoneMeta cache for the phone/email meta lane.
-	// nil => meta caching off. Gated by phone_info.caching / email_info.caching.
-	mcache *metacache.Repo
+	orch *Orchestrator
 	// sink is the Kinesis analytics sink (fire-and-forget, one event per request).
-	// nil => analytics off.
+	// nil => analytics off. It stays on the transport layer because the event is
+	// assembled from the *http.Request + the final client response.
 	sink *analytics.Sink
-	// cfg is the ConfigFetcher (per-tenant youConfig gates, global settings).
-	// nil in LOCAL_DEV where MySQL — and therefore the configs table — is absent.
-	cfg *appconfig.Fetcher
 }
 
-func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher, pcache *personacache.Repo, mcache *metacache.Repo, sink *analytics.Sink) *Persona {
-	return &Persona{runner: runner, phoneMeta: phoneMeta, emailMeta: emailMeta, breach: breachSvc, intel: intel, static: static, pcache: pcache, mcache: mcache, sink: sink, cfg: cfg}
+// NewPersona wires the transport handler. It keeps the original positional
+// signature so main.go and existing callers are unchanged; internally it builds
+// the Orchestrator from the lane deps and holds the sink for the transport layer.
+func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher, pcache *personacache.Repo, mcache *metacache.Repo, sink *analytics.Sink, common *commondata.Service) *Persona {
+	return &Persona{
+		orch: NewOrchestrator(runner, phoneMeta, emailMeta, breachSvc, intel, static, cfg, pcache, mcache, common),
+		sink: sink,
+	}
 }
 
 // breachOn reports whether the breach lane runs (tenant breach flag; nil => on).
 func breachOn(yc *appconfig.YouConfiguration) bool { return yc == nil || yc.Breach }
-
-// upiConfig returns the registered UPI crawler's parsed config (for the
-// transform's CLIENT_RESPONSE / verified-names handling), or nil when UPI is not
-// registered (LOCAL_DEV).
-func (h *Persona) upiConfig() *upi.Config {
-	c := h.runner.Lookup(crawler.KindPhone, "UPI")
-	if uc, ok := c.(*crawler.UPICrawler); ok {
-		return uc.Config()
-	}
-	return nil
-}
 
 func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -146,89 +126,10 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := contextWithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	resp := model.PersonaResponse{RequestID: requestID}
-
-	// Resolve the tenant's youConfig once: it drives the per-kind crawl sets AND
-	// the meta feature gates (phone_meta/email_meta/postpaid). On any failure
-	// (LOCAL_DEV fake tenant, missing/invalid config, no fetcher) yc is nil and
-	// the crawl sets are nil (run every registered crawler) — meta then runs
-	// with permissive defaults so the service still works without a configs table.
-	yc, phoneSites, emailSites := h.resolveConfig(tenant)
-
-	// Persona cache (DynamoDB OrganicData): read before crawling. Gated by
-	// youConfig.caching. A hit replays the cached section and skips that section's
-	// crawl entirely (mirroring get_organic_persona → skip get_persona_by_type).
-	// Phone and email cache independently under separate keys (two primary_cache_ids).
-	now := time.Now().Unix()
-	cacheOn := h.pcache != nil && yc.IsCachingEnabled()
-	var phoneKey, emailKey string
-	var phoneHit, emailHit bool
-	if cacheOn {
-		if req.Phone != nil {
-			phoneKey = h.pcache.Key("phone", normalizePhone(req.Phone.CountryCode, req.Phone.Number), tenantID)
-			if cached, hit, err := h.pcache.Get(ctx, phoneKey, now); err == nil && hit {
-				resp.PhoneData, phoneHit = cached.PhoneData, true
-				tm.record("cache_phone", 0)
-			}
-		}
-		if req.Email != "" {
-			emailKey = h.pcache.Key("email", req.Email, tenantID)
-			if cached, hit, err := h.pcache.Get(ctx, emailKey, now); err == nil && hit {
-				resp.EmailData, emailHit = cached.EmailData, true
-				tm.record("cache_email", 0)
-			}
-		}
-	}
-
-	// Phone branch and email branch run concurrently; within each, the crawler
-	// fan-out and the meta lookup run concurrently too — matching Python's
-	// per-branch parallel sub-tasks. A section that hit the cache is NOT re-crawled.
-	fanoutStart := time.Now()
-	var wg sync.WaitGroup
-	if req.Phone != nil && !phoneHit {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp.PhoneData = h.buildPhoneSection(ctx, req.Phone, tm, phoneSites, yc)
-		}()
-	}
-	if req.Email != "" && !emailHit {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp.EmailData = h.buildEmailSection(ctx, req.Email, tm, emailSites, yc)
-		}()
-	}
-	wg.Wait()
-	tm.since("fanout_total", fanoutStart)
-
-	// Persona cache write-back: persist freshly-crawled sections (cache miss only)
-	// fire-and-forget. Each section is stored under its own key as a single-section
-	// PersonaResponse, matching the per-type Python write. Skipped when the section
-	// hit the cache (nothing new) or caching is off.
-	if cacheOn {
-		if resp.PhoneData != nil && !phoneHit {
-			sec := resp.PhoneData
-			go func() { _ = h.pcache.Put(context.Background(), phoneKey, &model.PersonaResponse{PhoneData: sec}, now) }()
-		}
-		if resp.EmailData != nil && !emailHit {
-			sec := resp.EmailData
-			go func() { _ = h.pcache.Put(context.Background(), emailKey, &model.PersonaResponse{EmailData: sec}, now) }()
-		}
-	}
-
-	// Intelligence (remote ml_service) runs after both sections resolve — it
-	// sends the assembled response + request to ml_service and merges the score
-	// back into per-section and common intelligence_data, then derives the
-	// prediction. Gated on tenant common_intelligence.enabled inside the service.
-	if h.intel != nil && yc != nil && yc.IsCommonIntelligenceEnabled() {
-		intelStart := time.Now()
-		h.applyIntelligence(ctx, &req, &resp, yc, tenantID)
-		tm.since("intelligence", intelStart)
-	}
-
-	// Top-level status from the section status codes (compute_top_level_status).
-	resp.StatusCode, resp.Status = computeTopLevelStatus(&resp)
+	// Orchestration: the application service assembles the full persona response
+	// (cache → fan-out → intelligence → status). Transport-agnostic; returns the
+	// pre-transform response and the resolved youConfig this layer needs.
+	resp, yc := h.orch.Build(ctx, &req, tenant, requestID, tm)
 
 	tm.since("total", start)
 	resp.Timings = tm.asMap()
@@ -238,12 +139,12 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// prediction reshaped, meta stripped unless ?meta is absent-but-present.
 	// (See transform.go for the full rule set.)
 	metaParam := r.URL.Query().Has("meta")
-	ut := resolveUPITransform(h.upiConfig(), yc)
+	ut := resolveUPITransform(h.orch.upiConfig(), yc)
 	// Build the ml-payload-shaped response BEFORE transform for the analytics
 	// analytic_response field (the closest analogue to Python's filtered response),
 	// while transformResponse produces the client `out`.
-	analyticResp := toStrippedMap(&resp)
-	out := transformResponse(&resp, yc, metaParam, ut)
+	analyticResp := toStrippedMap(resp)
+	out := transformResponse(resp, yc, metaParam, ut)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Server-Timing", tm.serverTimingHeader())
@@ -254,80 +155,8 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	// swallows all errors, so this can never affect the client. nil sink => no-op.
 	if h.sink != nil {
 		apiTime := time.Since(start).Seconds()
-		go h.sink.Push(context.Background(), h.buildAnalyticsEvent(r, requestID, tenantID, &req, out, analyticResp, apiTime))
+		go h.sink.Push(context.Background(), buildAnalyticsEvent(r, requestID, tenantID, &req, out, analyticResp, apiTime))
 	}
-}
-
-// buildAnalyticsEvent assembles the Kinesis event for a persona request, porting
-// create_analytic_event. request carries the raw identifiers (the sink md5-hashes
-// email/phone in place before publish); response is the final client shape;
-// analyticResponse is the pre-transform stripped response. Headers are the subset
-// go-you has (Flask carries more; the extras are omitted, not consumed downstream).
-func (h *Persona) buildAnalyticsEvent(r *http.Request, requestID, tenantID string, req *model.PersonaRequest, out, analyticResp map[string]any, apiTime float64) analytics.Event {
-	return analytics.Event{
-		RequestID:        requestID,
-		TenantID:         tenantID,
-		Headers:          analyticsHeaders(r),
-		Request:          toStrippedMap(req),
-		LoggingContext:   map[string]any{"client_ip": clientIP(r)},
-		Response:         out,
-		AnalyticResponse: analyticResp,
-		Timestamp:        time.Now().UTC().Format("2006-01-02T15:04:05.000000"),
-		EventName:        analytics.EventName,
-		Namespace:        os.Getenv("NAMESPACE"),
-		ClientReqStr:     "",
-		APITimeTaken:     roundTo(apiTime, 3),
-	}
-}
-
-// analyticsHeaders extracts the request headers the analytics event records (the
-// subset go-you receives behind the ingress).
-func analyticsHeaders(r *http.Request) map[string]string {
-	h := map[string]string{}
-	for _, k := range []string{"X-Request-Id", "X-Real-Ip", "X-Forwarded-For", "User-Agent", "Referer", "X-Original-Forwarded-For"} {
-		if v := r.Header.Get(k); v != "" {
-			h[k] = v
-		}
-	}
-	return h
-}
-
-// clientIP returns the best-effort client IP from the standard proxy headers,
-// falling back to RemoteAddr.
-func clientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		if i := strings.IndexByte(v, ','); i > 0 {
-			return strings.TrimSpace(v[:i])
-		}
-		return strings.TrimSpace(v)
-	}
-	if v := r.Header.Get("X-Real-Ip"); v != "" {
-		return v
-	}
-	return r.RemoteAddr
-}
-
-// roundTo rounds x to n decimal places (matches Python round(_, 3)).
-func roundTo(x float64, n int) float64 {
-	p := math.Pow(10, float64(n))
-	return math.Round(x*p) / p
-}
-
-// resolveConfig parses the tenant youConfig and derives the per-kind crawl
-// sets. Returns (nil, nil, nil) when the fetcher/config is unavailable — the
-// caller then runs every registered crawler and applies permissive meta gates.
-func (h *Persona) resolveConfig(tenant *auth.Tenant) (yc *appconfig.YouConfiguration, phoneSites, emailSites []string) {
-	if h.cfg == nil || tenant == nil || tenant.Config == "" {
-		return nil, nil, nil
-	}
-	parsed, err := appconfig.ParseYouConfig(tenant.Config)
-	if err != nil {
-		return nil, nil, nil
-	}
-	globalDisabled := appconfig.GlobalDisabled(h.cfg)
-	phoneSites = appconfig.CrawlSet("phone", h.runner.Available(crawler.KindPhone), parsed, globalDisabled)
-	emailSites = appconfig.CrawlSet("email", h.runner.Available(crawler.KindEmail), parsed, globalDisabled)
-	return parsed, phoneSites, emailSites
 }
 
 // phoneMetaOn reports whether the phone_meta lane should run for this tenant.
@@ -361,119 +190,6 @@ func emailMetaOn(yc *appconfig.YouConfiguration) bool {
 
 // postpaidOn reports whether the postpaid sub-lane runs (nil => on).
 func postpaidOn(yc *appconfig.YouConfiguration) bool { return yc == nil || yc.IsPostpaidEnabled() }
-
-// runCrawlers runs the config-selected sites, or every registered crawler of
-// the kind when sites is nil (fallback).
-func (h *Persona) runCrawlers(ctx context.Context, kind crawler.Kind, identifier string, sites []string) []crawler.Result {
-	if sites == nil {
-		return h.runner.Run(ctx, kind, identifier)
-	}
-	return h.runner.RunSites(ctx, kind, identifier, sites)
-}
-
-// buildPhoneSection runs the phone crawlers and phone meta concurrently.
-func (h *Persona) buildPhoneSection(ctx context.Context, phone *model.Phone, tm *timings, sites []string, yc *appconfig.YouConfiguration) *model.Section {
-	identifier := normalizePhone(phone.CountryCode, phone.Number)
-
-	var (
-		results   []crawler.Result
-		phoneMeta *model.PhoneMeta
-		static    map[string]any
-		inner     sync.WaitGroup
-	)
-	// static login id for phone = country_code+national_number, no '+'
-	// (StaticDataService: login_id.country_code + login_id.national_number).
-	staticID := strings.TrimPrefix(identifier, "+")
-
-	inner.Add(1)
-	go func() { defer inner.Done(); results = h.runCrawlers(ctx, crawler.KindPhone, identifier, sites) }()
-
-	// static_data feeds phone breach + digital_age + linked_ids. Fetch once,
-	// concurrently, under the same leaf-only ctx. Only when a signal that needs
-	// it is enabled (breach / digital_age / linked_ids).
-	if h.static != nil && phoneStaticNeeded(yc) {
-		inner.Add(1)
-		go func() {
-			defer inner.Done()
-			staticStart := time.Now()
-			doc, err := h.static.GetInorganic(ctx, staticID)
-			tm.since("static_phone", staticStart)
-			if err == nil {
-				static = doc
-			}
-		}()
-	}
-
-	if h.phoneMeta != nil && phoneMetaOn(yc) {
-		inner.Add(1)
-		go func() {
-			defer inner.Done()
-			metaStart := time.Now()
-			// Meta cache (EmailPhoneMeta) read: keyed by the international number.
-			// A hit replays the stored PhoneMeta and skips the meta RPCs.
-			if h.mcache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
-				if raw, hit, err := h.mcache.Get(ctx, identifier, time.Now().Unix()); err == nil && hit {
-					var pm model.PhoneMeta
-					if json.Unmarshal(raw, &pm) == nil {
-						if pm.Revocations == nil {
-							pm.Revocations = map[string]any{}
-						}
-						phoneMeta = &pm
-						tm.record("meta_cache_phone", 0)
-						return
-					}
-				}
-			}
-			national := nationalFromIdentifier(identifier)
-			r := h.phoneMeta.Fetch(ctx, national, identifier, postpaidOn(yc))
-			tm.since("meta_phone", metaStart)
-			revocations := r.Revocations
-			if revocations == nil {
-				// Prod keeps "revocations": {} (clean_empty preserves empty
-				// dicts); never emit null.
-				revocations = map[string]any{}
-			}
-			phoneMeta = &model.PhoneMeta{
-				PhoneNumber: identifier,
-				Operator:    r.Operator,
-				Circle:      r.Circle,
-				Postpaid:    r.Postpaid,
-				Revocations: revocations,
-			}
-			// Write-back fire-and-forget.
-			if h.mcache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
-				pm := phoneMeta
-				go func() { _ = h.mcache.Put(context.Background(), identifier, pm, time.Now().Unix()) }()
-			}
-		}()
-	}
-	inner.Wait()
-
-	recordCrawlerTimings(tm, results)
-	// Section key is the international number (prod: phone_data.primary_data.key
-	// = login_id.international_number, e.g. "+917667701982").
-	sec := buildSection("phone", identifier, results)
-	if phoneMeta != nil {
-		sec.PrimaryData.PhoneMeta = phoneMeta
-	}
-	// Phone breach: computed from static_data (pawn_service.get_breach_details).
-	// With no static repo / no match it yields the empty not-found block.
-	if h.breach != nil && breachOn(yc) {
-		sec.PrimaryData.BreachDetails = h.breach.Phone(identifier, staticID, static)
-	}
-	// digital_age + linked_ids derived from static_data, gated per-key. Stashed on
-	// the section intelligence_data BEFORE applyIntelligence, which then merges the
-	// ml_service output on top without clobbering these.
-	if intel := phoneStaticIntelligence(yc, static, phoneMeta); intel != nil {
-		sec.IntelligenceData = intel
-	}
-	// Attach static_data so it flows into the ml_service payload (prod parity).
-	// transform (remove_static_data) strips it from the client response.
-	if len(static) > 0 {
-		sec.StaticData = static
-	}
-	return sec
-}
 
 // phoneStaticNeeded reports whether any phone signal that consumes static_data is
 // enabled — breach OR digital_age OR linked_ids OR the ml_service lane (which now
@@ -518,95 +234,6 @@ func phoneStaticIntelligence(yc *appconfig.YouConfiguration, static map[string]a
 		return nil
 	}
 	return id
-}
-
-// buildEmailSection runs the email crawlers and email meta concurrently.
-func (h *Persona) buildEmailSection(ctx context.Context, email string, tm *timings, sites []string, yc *appconfig.YouConfiguration) *model.Section {
-	var (
-		results   []crawler.Result
-		emailMeta *model.EmailMeta
-		breachDet *model.BreachDetails
-		static    map[string]any
-		inner     sync.WaitGroup
-	)
-	inner.Add(1)
-	go func() { defer inner.Done(); results = h.runCrawlers(ctx, crawler.KindEmail, email, sites) }()
-
-	// static_data feeds email linked_ids (primary_ph). digital_age for email uses
-	// the HIBP breach dates, not static_data. Fetch only when linked_ids is on.
-	if h.static != nil && emailStaticNeeded(yc) {
-		inner.Add(1)
-		go func() {
-			defer inner.Done()
-			staticStart := time.Now()
-			doc, err := h.static.GetInorganic(ctx, email)
-			tm.since("static_email", staticStart)
-			if err == nil {
-				static = doc
-			}
-		}()
-	}
-
-	if h.emailMeta != nil && emailMetaOn(yc) {
-		inner.Add(1)
-		go func() {
-			defer inner.Done()
-			metaStart := time.Now()
-			// Meta cache (EmailPhoneMeta) read: keyed by the email address.
-			if h.mcache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
-				if raw, hit, err := h.mcache.Get(ctx, email, time.Now().Unix()); err == nil && hit {
-					var em model.EmailMeta
-					if json.Unmarshal(raw, &em) == nil {
-						emailMeta = &em
-						tm.record("meta_cache_email", 0)
-						return
-					}
-				}
-			}
-			r := h.emailMeta.Fetch(ctx, email)
-			tm.since("meta_email", metaStart)
-			em := &model.EmailMeta{Email: email, IsDisposable: r.IsDisposable}
-			if r.DomainAttributes != nil {
-				em.DomainAttributes = domainAttrsToModel(r.DomainAttributes)
-			}
-			emailMeta = em
-			// Write-back fire-and-forget.
-			if h.mcache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
-				m := em
-				go func() { _ = h.mcache.Put(context.Background(), email, m, time.Now().Unix()) }()
-			}
-		}()
-	}
-
-	if h.breach != nil && breachOn(yc) {
-		inner.Add(1)
-		go func() {
-			defer inner.Done()
-			breachStart := time.Now()
-			breachDet = h.breach.Email(ctx, email)
-			tm.since("breach_email", breachStart)
-		}()
-	}
-	inner.Wait()
-
-	recordCrawlerTimings(tm, results)
-	sec := buildSection("email", email, results)
-	if emailMeta != nil {
-		sec.PrimaryData.EmailMeta = emailMeta
-	}
-	if breachDet != nil {
-		sec.PrimaryData.BreachDetails = breachDet
-	}
-	// digital_age (from verified breach dates) + linked_ids (from static primary_ph),
-	// gated per-key; merged by applyIntelligence afterwards.
-	if intel := emailStaticIntelligence(yc, static, breachDet); intel != nil {
-		sec.IntelligenceData = intel
-	}
-	// Attach static_data for the ml_service payload; transform strips it client-side.
-	if len(static) > 0 {
-		sec.StaticData = static
-	}
-	return sec
 }
 
 // emailStaticNeeded reports whether the email branch needs static_data: linked_ids
@@ -723,102 +350,6 @@ func normalizePhone(countryCode, number string) string {
 		return "+" + num
 	}
 	return "+" + cc + num
-}
-
-// applyIntelligence runs the ml_service merge and attaches intelligence_data to
-// the per-section and top-level response, plus the raw prediction (reshaped
-// later by the transform's cleanup_prediction). The you_request/you_response
-// payloads are the response marshalled to maps and null-stripped, matching the
-// Python payload construction.
-func (h *Persona) applyIntelligence(ctx context.Context, req *model.PersonaRequest, resp *model.PersonaResponse, yc *appconfig.YouConfiguration, tenantID string) {
-	youResponse := toStrippedMap(resp)
-	youRequest := toStrippedMap(req)
-
-	// ml_service expects account_details as an OBJECT keyed by website
-	// (you_response['phone_data']['primary_data']['account_details']['SKYPE']), the
-	// same shape Python sends (account_details is a dict in the you_response before
-	// the ml call). go-you carries it as a LIST in the model and only converts to a
-	// map in transform (client path), so the ml payload built from the raw response
-	// must be keyed here too — otherwise ml_service's .get('SITE') hits a list and
-	// every FEATURE_ENGINE feature dies with "'list' object has no attribute 'get'".
-	// Unlike transform, we keep the FULL crawl (no client_response/UPI drops): the ml
-	// model reads the complete persona.
-	keyAccountDetailsForML(youResponse)
-
-	out := h.intel.Run(ctx, intelligence.Input{
-		HasPhone: req.Phone != nil,
-		HasEmail: req.Email != "",
-		// Tenant is the authenticated tenant username (tenantapp.id), matching
-		// Python's payload["tenant"] = request_context.tenant_app[0]
-		// (you_service_aggregator.get_intelligence). ml_service's FEATURE_ENGINE
-		// feature store is tenant-scoped: an empty tenant makes every
-		// FEATURE_ENGINE feature resolve to {error:true} while the (non-tenant-
-		// scoped) PREDICTION model still returns a score — exactly the split
-		// observed when this was sent as "".
-		Tenant:             tenantID,
-		CommonIntelligence: yc.CommonIntelligence,
-		YouRequest:         youRequest,
-		YouResponse:        youResponse,
-	})
-
-	if resp.PhoneData != nil && len(out.PhoneIntel) > 0 {
-		resp.PhoneData.IntelligenceData = mergeIntelligenceData(resp.PhoneData.IntelligenceData, out.PhoneIntel)
-	}
-	if resp.EmailData != nil && len(out.EmailIntel) > 0 {
-		resp.EmailData.IntelligenceData = mergeIntelligenceData(resp.EmailData.IntelligenceData, out.EmailIntel)
-	}
-	if len(out.CommonIntel) > 0 {
-		resp.IntelligenceData = mapToIntelligenceData(out.CommonIntel)
-	}
-	// Prediction: reshaped to {identity_fraud_score: score} or {error:true} in
-	// Phase 6 (cleanup_prediction); here we stash the raw outcome, gated by the
-	// tenant prediction flag.
-	if yc.Prediction {
-		if out.PredictionError || out.PredictionScore == nil {
-			resp.Prediction = map[string]any{"error": true}
-		} else {
-			// Placeholder key; cleanup_prediction renames to the tenant's
-			// output_key_name (default identity_fraud_score) in Phase 6.
-			resp.Prediction = map[string]any{"predicted_score": *out.PredictionScore}
-		}
-	}
-}
-
-// keyAccountDetailsForML rewrites phone_data/email_data primary_data.account_details
-// from the go-you list form ([{_website, user_exist, ...}]) into the website-keyed
-// map form ({"FLIPKART": {user_exist, ...}}) that ml_service reads. It mutates the
-// stripped ml-payload map in place. The full crawl set is preserved (no client-side
-// drops) — the ml model consumes every site. The per-entry "_website" hint is
-// removed, matching the client transform and the Python dict shape.
-func keyAccountDetailsForML(you map[string]any) {
-	for _, sec := range []string{"phone_data", "email_data"} {
-		s, ok := you[sec].(map[string]any)
-		if !ok {
-			continue
-		}
-		pd, ok := s["primary_data"].(map[string]any)
-		if !ok {
-			continue
-		}
-		list, ok := pd["account_details"].([]any)
-		if !ok {
-			continue // already a map or absent
-		}
-		m := make(map[string]any, len(list))
-		for _, e := range list {
-			entry, ok := e.(map[string]any)
-			if !ok {
-				continue
-			}
-			name, _ := entry["_website"].(string)
-			if name == "" {
-				continue
-			}
-			delete(entry, "_website")
-			m[name] = entry
-		}
-		pd["account_details"] = m
-	}
 }
 
 // toStrippedMap marshals v to JSON then back to a map, dropping nil values
@@ -1013,10 +544,4 @@ func buildSection(kind, key string, results []crawler.Result) *model.Section {
 		StatusCode: sectionStatusSuccess,
 		Status:     statusOK,
 	}
-}
-
-func writeError(w http.ResponseWriter, status int, requestID, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(model.ErrorResponse{RequestID: requestID, ErrorMsg: msg})
 }

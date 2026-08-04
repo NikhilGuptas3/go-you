@@ -26,6 +26,7 @@ import (
 	"github.com/sign3labs/go-you/internal/auth"
 	"github.com/sign3labs/go-you/internal/awsclients"
 	"github.com/sign3labs/go-you/internal/breach"
+	"github.com/sign3labs/go-you/internal/commondata"
 	"github.com/sign3labs/go-you/internal/config"
 	"github.com/sign3labs/go-you/internal/crawler"
 	"github.com/sign3labs/go-you/internal/crawler/upi"
@@ -237,7 +238,18 @@ func main() {
 	logEnabled("meta cache (DynamoDB EmailPhoneMeta)", metaCache != nil)
 	logEnabled("analytics sink (Kinesis)", analyticsSink != nil)
 
-	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg, personaCache, metaCache, analyticsSink)
+	// --- common_data (enrichdata.in) service: up to 6 enrich checks assembled
+	// into the top-level common_data block. Config-driven (enrich_data_config in
+	// the configs table); self-disables at request time when that row is absent
+	// or enabled:false, so it is safe to construct whenever config is available.
+	// Reuses the OrganicData persona cache for the enrich doc. Off in LOCAL_DEV. ---
+	var commonSvc *commondata.Service
+	if !localDev && appCfg != nil {
+		commonSvc = commondata.New(appCfg, personaCache)
+	}
+	logEnabled("common_data (enrichdata.in)", commonSvc != nil)
+
+	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg, personaCache, metaCache, analyticsSink, commonSvc)
 
 	// --- Router ---
 	r := chi.NewRouter()

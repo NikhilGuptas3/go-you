@@ -118,20 +118,9 @@ func transformSection(sec map[string]any, yc *appconfig.YouConfiguration, ut *up
 		return // already a map or absent
 	}
 
-	// (1) slice -> keyed map. No drops yet (UPI intelligence needs the entry).
-	m := make(map[string]any, len(list))
-	for _, e := range list {
-		entry, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _ := entry["_website"].(string)
-		if name == "" {
-			continue
-		}
-		delete(entry, "_website")
-		m[name] = entry
-	}
+	// (1) slice -> keyed map (shared with the ml-payload path via
+	// accountDetailsListToMap). No drops yet (UPI intelligence needs the entry).
+	m := accountDetailsListToMap(list)
 
 	// (2) UPI response reshape + PHONEPE derivation.
 	transformUPIResponse(m, ut)

@@ -205,6 +205,10 @@ type PersonaResponse struct {
 	PhoneData        *Section          `json:"phone_data,omitempty"`
 	EmailData        *Section          `json:"email_data,omitempty"`
 	IntelligenceData *IntelligenceData `json:"intelligence_data,omitempty"`
+	// CommonData is the enrichdata.in enrichment block (common_data_service):
+	// {check_name -> result}, e.g. {"vintage":{...},"demat_check":{...}}. Omitted
+	// when no enrich check ran. Populated by internal/commondata.
+	CommonData map[string]any `json:"common_data,omitempty"`
 	// Prediction is the reshaped client form: {"identity_fraud_score": <score>}
 	// or {"error": true}. Built by cleanup_prediction (Phase 6), so it is a raw
 	// map rather than the internal Prediction struct.

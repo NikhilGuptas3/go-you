@@ -174,6 +174,56 @@ func (yc *YouConfiguration) IsCommonIntelligenceEnabled() bool {
 	return boolAt(yc.CommonIntelligence, "enabled")
 }
 
+// --- common_data (enrichdata.in) gates ---
+// These mirror the per-check conditionals in common_data_service
+// (you_service_aggregator.py:800-828). Each enrich check ANDs a global
+// ENRICH_DATA.enabled flag (read separately from tpi_global_config) with the
+// tenant gate below.
+
+// IsIntelligenceEnabled reports intelligence.enabled == true.
+func (yc *YouConfiguration) IsIntelligenceEnabled() bool {
+	return boolAt(yc.Intelligence, "enabled")
+}
+
+// EnrichedDataAPIEnabled gates the `vintage` check:
+// intelligence.enabled && intelligence.enriched_data_api.
+func (yc *YouConfiguration) EnrichedDataAPIEnabled() bool {
+	return boolAt(yc.Intelligence, "enabled") && boolAt(yc.Intelligence, "enriched_data_api")
+}
+
+// DematCheckEnabled gates `demat_check`: common_intelligence.enabled && .demat_check.
+func (yc *YouConfiguration) DematCheckEnabled() bool {
+	return boolAt(yc.CommonIntelligence, "enabled") && boolAt(yc.CommonIntelligence, "demat_check")
+}
+
+// MutualFundCheckEnabled gates `mutual_fund_check`.
+func (yc *YouConfiguration) MutualFundCheckEnabled() bool {
+	return boolAt(yc.CommonIntelligence, "enabled") && boolAt(yc.CommonIntelligence, "mutual_fund_check")
+}
+
+// CreditCardCheckEnabled gates `credit_card_check`.
+func (yc *YouConfiguration) CreditCardCheckEnabled() bool {
+	return boolAt(yc.CommonIntelligence, "enabled") && boolAt(yc.CommonIntelligence, "credit_card_check")
+}
+
+// FintechCountEnabled gates `fintech_count`.
+func (yc *YouConfiguration) FintechCountEnabled() bool {
+	return boolAt(yc.CommonIntelligence, "enabled") && boolAt(yc.CommonIntelligence, "fintech_count")
+}
+
+// PhoneToAddressEnabled gates `phone_to_address`: common_intelligence.enabled &&
+// (common_intelligence.phone_to_address OR common_intelligence.phone_to_address_with_raw.enabled).
+func (yc *YouConfiguration) PhoneToAddressEnabled() bool {
+	if !boolAt(yc.CommonIntelligence, "enabled") {
+		return false
+	}
+	if boolAt(yc.CommonIntelligence, "phone_to_address") {
+		return true
+	}
+	ptaRaw, ok := yc.CommonIntelligence["phone_to_address_with_raw"].(map[string]any)
+	return ok && boolAt(ptaRaw, "enabled")
+}
+
 // IsCachingEnabled reports youConfig.caching == true — the gate for the
 // OrganicData persona cache (you_service_aggregator: caching read/write only when
 // request_context.you_configuration.caching). Defaults to false when absent: the
