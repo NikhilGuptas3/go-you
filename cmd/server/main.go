@@ -139,9 +139,34 @@ func main() {
 		crawler.NewPatreon(cfg.HTTPTimeout),
 		crawler.NewBitmoji(cfg.HTTPTimeout),
 		crawler.NewDiscord(cfg.HTTPTimeout),
+		// Email — token-free batch 2 (stock TLS): Naukri/Bodybuilding/Atlassian/
+		// Flickr/Shaadi. Single-request existence checks ported from the Python
+		// spiders. Shaadi email only (phone variant deferred — inconsistent path).
+		crawler.NewNaukri(cfg.HTTPTimeout),
+		crawler.NewBodybuilding(cfg.HTTPTimeout),
+		crawler.NewAtlassian(cfg.HTTPTimeout),
+		crawler.NewFlickr(cfg.HTTPTimeout),
+		crawler.NewShaadiEmail(cfg.HTTPTimeout),
 		// Email — uTLS
 		crawler.NewGaanaEmail(cfg.HTTPTimeout),
 		crawler.NewJeevansathiEmail(cfg.HTTPTimeout),
+		// Token-gated (Phase B) — two-step (fetch cookie/token, then check).
+		// SNAPDEAL is the reference: cookie-only + uTLS, both channels.
+		crawler.NewSnapdealPhone(cfg.HTTPTimeout),
+		crawler.NewSnapdealEmail(cfg.HTTPTimeout),
+		// Phase B1 — the six easy token-gated sites.
+		crawler.NewEventbrite(cfg.HTTPTimeout),     // email
+		crawler.NewTrivago(cfg.HTTPTimeout),        // email
+		crawler.NewVimeo(cfg.HTTPTimeout),          // email
+		crawler.NewOyorooms(cfg.HTTPTimeout),       // phone (uTLS)
+		crawler.NewZohoPhone(cfg.HTTPTimeout),      // both
+		crawler.NewZohoEmail(cfg.HTTPTimeout),      //
+		crawler.NewShopcluesPhone(cfg.HTTPTimeout), // both
+		crawler.NewShopcluesEmail(cfg.HTTPTimeout), //
+		// Phase B2 — token-gated sites that parse their token from the HTML body.
+		crawler.NewTumblr(cfg.HTTPTimeout),     // email (regex API_TOKEN)
+		crawler.NewQuora(cfg.HTTPTimeout),      // email (HTML scan; uTLS, Safari->Chrome)
+		crawler.NewCodecademy(cfg.HTTPTimeout), // email (two GETs, <meta> csrf)
 	}
 
 	// UPI (phone) — needs config (upi_config + cashfree creds), so only when the
@@ -249,7 +274,19 @@ func main() {
 	}
 	logEnabled("common_data (enrichdata.in)", commonSvc != nil)
 
-	personaHandler := handler.NewPersona(runner, phoneMeta, emailMeta, breachSvc, intelSvc, staticRepo, appCfg, personaCache, metaCache, analyticsSink, commonSvc)
+	personaHandler := handler.NewPersona(handler.Deps{
+		Runner:       runner,
+		PhoneMeta:    phoneMeta,
+		EmailMeta:    emailMeta,
+		Breach:       breachSvc,
+		Intel:        intelSvc,
+		Static:       staticRepo,
+		Config:       appCfg,
+		PersonaCache: personaCache,
+		MetaCache:    metaCache,
+		Common:       commonSvc,
+		Sink:         analyticsSink,
+	})
 
 	// --- Router ---
 	r := chi.NewRouter()

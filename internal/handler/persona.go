@@ -16,15 +16,9 @@ import (
 	"github.com/sign3labs/go-you/internal/analytics"
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
-	"github.com/sign3labs/go-you/internal/breach"
-	"github.com/sign3labs/go-you/internal/commondata"
 	"github.com/sign3labs/go-you/internal/crawler"
-	"github.com/sign3labs/go-you/internal/intelligence"
-	"github.com/sign3labs/go-you/internal/meta"
-	"github.com/sign3labs/go-you/internal/metacache"
 	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
-	"github.com/sign3labs/go-you/internal/personacache"
 	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
@@ -69,13 +63,13 @@ type Persona struct {
 	sink *analytics.Sink
 }
 
-// NewPersona wires the transport handler. It keeps the original positional
-// signature so main.go and existing callers are unchanged; internally it builds
-// the Orchestrator from the lane deps and holds the sink for the transport layer.
-func NewPersona(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher, pcache *personacache.Repo, mcache *metacache.Repo, sink *analytics.Sink, common *commondata.Service) *Persona {
+// NewPersona wires the transport handler from a Deps struct. It builds the
+// Orchestrator from the lane deps and holds the sink for the transport layer
+// (the analytics event is assembled from the *http.Request + client response).
+func NewPersona(deps Deps) *Persona {
 	return &Persona{
-		orch: NewOrchestrator(runner, phoneMeta, emailMeta, breachSvc, intel, static, cfg, pcache, mcache, common),
-		sink: sink,
+		orch: NewOrchestrator(deps),
+		sink: deps.Sink,
 	}
 }
 

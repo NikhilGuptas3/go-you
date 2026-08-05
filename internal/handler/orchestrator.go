@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sign3labs/go-you/internal/analytics"
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
 	"github.com/sign3labs/go-you/internal/breach"
@@ -21,54 +22,52 @@ import (
 	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
+// Deps is the set of lane dependencies for the persona pipeline. Every field is
+// optional/nil-safe: a nil dep disables that lane and the response degrades to
+// its empty/error form (the contract main.go relies on). Using a named-field
+// struct instead of positional args keeps the wiring readable as lanes are added
+// (no growing positional constructor) and lets callers set only what they have.
+type Deps struct {
+	Runner    *crawler.Runner
+	PhoneMeta *meta.PhoneMetaService
+	EmailMeta *meta.EmailMetaService
+	Breach    *breach.Service
+	Intel     *intelligence.Service
+	// Static is the MySQL-backed static-persona repo (feeds phone breach,
+	// digital_age, linked_ids). nil in LOCAL_DEV / when no DB — the derived
+	// signals then degrade to their empty/error forms.
+	Static *staticdata.Repo
+	// PersonaCache is the DynamoDB OrganicData persona cache (read-before-crawl,
+	// write-after). nil => caching off (always crawl). Gated per-tenant by
+	// youConfig.caching.
+	PersonaCache *personacache.Repo
+	// MetaCache is the DynamoDB EmailPhoneMeta cache for the phone/email meta lane.
+	// nil => meta caching off. Gated by phone_info.caching / email_info.caching.
+	MetaCache *metacache.Repo
+	// Common is the enrichdata.in common_data service (up to 6 enrich checks).
+	// nil => feature off (no common_data block). Gated per-tenant by the
+	// intelligence/common_intelligence sub-flags inside the service.
+	Common *commondata.Service
+	// Config is the ConfigFetcher (per-tenant youConfig gates, global settings).
+	// nil in LOCAL_DEV where MySQL — and therefore the configs table — is absent.
+	Config *appconfig.Fetcher
+	// Sink is the Kinesis analytics sink. It is transport-level (the event is built
+	// from the *http.Request), so the Orchestrator ignores it — Persona reads it.
+	Sink *analytics.Sink
+}
+
 // Orchestrator is the persona application/service layer: it owns the lane
 // dependencies (crawlers, meta, breach, intelligence, common_data, static repo,
 // caches) and turns a decoded request into a fully-assembled *model.PersonaResponse.
 // It is transport-agnostic — no *http.Request, no ResponseWriter — so the HTTP
 // handler (Persona) is left as decode → Build → transform → encode.
-//
-// Every dependency is optional/nil-safe: a nil field disables that lane and the
-// response degrades to its empty/error form (the same contract main.go relies on).
 type Orchestrator struct {
-	runner    *crawler.Runner
-	phoneMeta *meta.PhoneMetaService
-	emailMeta *meta.EmailMetaService
-	breach    *breach.Service
-	intel     *intelligence.Service
-	// static is the MySQL-backed static-persona repo (feeds phone breach,
-	// digital_age, linked_ids). nil in LOCAL_DEV / when no DB — the derived
-	// signals then degrade to their empty/error forms.
-	static *staticdata.Repo
-	// pcache is the DynamoDB OrganicData persona cache (read-before-crawl,
-	// write-after). nil => caching off (always crawl). Gated per-tenant by
-	// youConfig.caching.
-	pcache *personacache.Repo
-	// mcache is the DynamoDB EmailPhoneMeta cache for the phone/email meta lane.
-	// nil => meta caching off. Gated by phone_info.caching / email_info.caching.
-	mcache *metacache.Repo
-	// common is the enrichdata.in common_data service (up to 6 enrich checks).
-	// nil => feature off (no common_data block). Gated per-tenant by the
-	// intelligence/common_intelligence sub-flags inside the service.
-	common *commondata.Service
-	// cfg is the ConfigFetcher (per-tenant youConfig gates, global settings).
-	// nil in LOCAL_DEV where MySQL — and therefore the configs table — is absent.
-	cfg *appconfig.Fetcher
+	deps Deps
 }
 
 // NewOrchestrator builds the application-layer service from its lane deps.
-func NewOrchestrator(runner *crawler.Runner, phoneMeta *meta.PhoneMetaService, emailMeta *meta.EmailMetaService, breachSvc *breach.Service, intel *intelligence.Service, static *staticdata.Repo, cfg *appconfig.Fetcher, pcache *personacache.Repo, mcache *metacache.Repo, common *commondata.Service) *Orchestrator {
-	return &Orchestrator{
-		runner:    runner,
-		phoneMeta: phoneMeta,
-		emailMeta: emailMeta,
-		breach:    breachSvc,
-		intel:     intel,
-		static:    static,
-		pcache:    pcache,
-		mcache:    mcache,
-		common:    common,
-		cfg:       cfg,
-	}
+func NewOrchestrator(deps Deps) *Orchestrator {
+	return &Orchestrator{deps: deps}
 }
 
 // Build runs the full persona pipeline for one request and returns the assembled
@@ -84,7 +83,6 @@ func (o *Orchestrator) Build(ctx context.Context, req *model.PersonaRequest, ten
 	if tenant != nil {
 		tenantID = tenant.ID
 	}
-	resp := &model.PersonaResponse{RequestID: requestID}
 
 	// Resolve the tenant's youConfig once: it drives the per-kind crawl sets AND
 	// the meta feature gates (phone_meta/email_meta/postpaid). On any failure
@@ -93,86 +91,28 @@ func (o *Orchestrator) Build(ctx context.Context, req *model.PersonaRequest, ten
 	// with permissive defaults so the service still works without a configs table.
 	yc, phoneSites, emailSites := o.resolveConfig(tenant)
 
-	// Persona cache (DynamoDB OrganicData): read before crawling. Gated by
-	// youConfig.caching. A hit replays the cached section and skips that section's
-	// crawl entirely (mirroring get_organic_persona → skip get_persona_by_type).
-	// Phone and email cache independently under separate keys (two primary_cache_ids).
-	now := time.Now().Unix()
-	cacheOn := o.pcache != nil && yc.IsCachingEnabled()
-	var phoneKey, emailKey string
-	var phoneHit, emailHit bool
-	if cacheOn {
-		if req.Phone != nil {
-			phoneKey = o.pcache.Key("phone", normalizePhone(req.Phone.CountryCode, req.Phone.Number), tenantID)
-			if cached, hit, err := o.pcache.Get(ctx, phoneKey, now); err == nil && hit {
-				resp.PhoneData, phoneHit = cached.PhoneData, true
-				tm.record("cache_phone", 0)
-			}
-		}
-		if req.Email != "" {
-			emailKey = o.pcache.Key("email", req.Email, tenantID)
-			if cached, hit, err := o.pcache.Get(ctx, emailKey, now); err == nil && hit {
-				resp.EmailData, emailHit = cached.EmailData, true
-				tm.record("cache_email", 0)
-			}
-		}
+	st := &laneState{
+		req:        req,
+		yc:         yc,
+		tenantID:   tenantID,
+		phoneSites: phoneSites,
+		emailSites: emailSites,
+		tm:         tm,
+		resp:       &model.PersonaResponse{RequestID: requestID},
 	}
 
-	// Phone branch and email branch run concurrently; within each, the crawler
-	// fan-out and the meta lookup run concurrently too — matching Python's
-	// per-branch parallel sub-tasks. A section that hit the cache is NOT re-crawled.
-	// The common_data (enrichdata.in) service runs concurrently too, mirroring
-	// Python's common_future submitted alongside the phone/email futures.
-	fanoutStart := time.Now()
-	var wg sync.WaitGroup
-	if req.Phone != nil && !phoneHit {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp.PhoneData = o.buildPhoneSection(ctx, req.Phone, tm, phoneSites, yc)
-		}()
-	}
-	if req.Email != "" && !emailHit {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			resp.EmailData = o.buildEmailSection(ctx, req.Email, tm, emailSites, yc)
-		}()
-	}
-	if o.common != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			commonStart := time.Now()
-			if cd := o.common.Fetch(ctx, req, yc); len(cd) > 0 {
-				resp.CommonData = cd
-			}
-			tm.since("common_data", commonStart)
-		}()
-	}
-	wg.Wait()
-	tm.since("fanout_total", fanoutStart)
-
-	// Persona cache write-back: persist freshly-crawled sections (cache miss only)
-	// fire-and-forget. Each section is stored under its own key as a single-section
-	// PersonaResponse, matching the per-type Python write. Skipped when the section
-	// hit the cache (nothing new) or caching is off.
-	if cacheOn {
-		if resp.PhoneData != nil && !phoneHit {
-			sec := resp.PhoneData
-			go func() { _ = o.pcache.Put(context.Background(), phoneKey, &model.PersonaResponse{PhoneData: sec}, now) }()
-		}
-		if resp.EmailData != nil && !emailHit {
-			sec := resp.EmailData
-			go func() { _ = o.pcache.Put(context.Background(), emailKey, &model.PersonaResponse{EmailData: sec}, now) }()
-		}
-	}
+	// Fan out the lanes concurrently. Each lane writes its own response field;
+	// the section lanes are wrapped with the persona-cache decorator (read-before/
+	// write-after), so a cache hit replays the section and skips the crawl.
+	// Mirrors Python's phone/email/common futures under one deadline.
+	o.runLanes(ctx, o.lanes(), st)
+	resp := st.resp
 
 	// Intelligence (remote ml_service) runs after both sections resolve — it
 	// sends the assembled response + request to ml_service and merges the score
 	// back into per-section and common intelligence_data, then derives the
 	// prediction. Gated on tenant common_intelligence.enabled inside the service.
-	if o.intel != nil && yc != nil && yc.IsCommonIntelligenceEnabled() {
+	if o.deps.Intel != nil && yc != nil && yc.IsCommonIntelligenceEnabled() {
 		intelStart := time.Now()
 		o.applyIntelligence(ctx, req, resp, yc, tenantID)
 		tm.since("intelligence", intelStart)
@@ -188,7 +128,7 @@ func (o *Orchestrator) Build(ctx context.Context, req *model.PersonaRequest, ten
 // transform's CLIENT_RESPONSE / verified-names handling), or nil when UPI is not
 // registered (LOCAL_DEV).
 func (o *Orchestrator) upiConfig() *upi.Config {
-	c := o.runner.Lookup(crawler.KindPhone, "UPI")
+	c := o.deps.Runner.Lookup(crawler.KindPhone, "UPI")
 	if uc, ok := c.(*crawler.UPICrawler); ok {
 		return uc.Config()
 	}
@@ -199,16 +139,16 @@ func (o *Orchestrator) upiConfig() *upi.Config {
 // sets. Returns (nil, nil, nil) when the fetcher/config is unavailable — the
 // caller then runs every registered crawler and applies permissive meta gates.
 func (o *Orchestrator) resolveConfig(tenant *auth.Tenant) (yc *appconfig.YouConfiguration, phoneSites, emailSites []string) {
-	if o.cfg == nil || tenant == nil || tenant.Config == "" {
+	if o.deps.Config == nil || tenant == nil || tenant.Config == "" {
 		return nil, nil, nil
 	}
 	parsed, err := appconfig.ParseYouConfig(tenant.Config)
 	if err != nil {
 		return nil, nil, nil
 	}
-	globalDisabled := appconfig.GlobalDisabled(o.cfg)
-	phoneSites = appconfig.CrawlSet("phone", o.runner.Available(crawler.KindPhone), parsed, globalDisabled)
-	emailSites = appconfig.CrawlSet("email", o.runner.Available(crawler.KindEmail), parsed, globalDisabled)
+	globalDisabled := appconfig.GlobalDisabled(o.deps.Config)
+	phoneSites = appconfig.CrawlSet("phone", o.deps.Runner.Available(crawler.KindPhone), parsed, globalDisabled)
+	emailSites = appconfig.CrawlSet("email", o.deps.Runner.Available(crawler.KindEmail), parsed, globalDisabled)
 	return parsed, phoneSites, emailSites
 }
 
@@ -216,9 +156,9 @@ func (o *Orchestrator) resolveConfig(tenant *auth.Tenant) (yc *appconfig.YouConf
 // the kind when sites is nil (fallback).
 func (o *Orchestrator) runCrawlers(ctx context.Context, kind crawler.Kind, identifier string, sites []string) []crawler.Result {
 	if sites == nil {
-		return o.runner.Run(ctx, kind, identifier)
+		return o.deps.Runner.Run(ctx, kind, identifier)
 	}
-	return o.runner.RunSites(ctx, kind, identifier, sites)
+	return o.deps.Runner.RunSites(ctx, kind, identifier, sites)
 }
 
 // buildPhoneSection runs the phone crawlers and phone meta concurrently.
@@ -241,12 +181,12 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 	// static_data feeds phone breach + digital_age + linked_ids. Fetch once,
 	// concurrently, under the same leaf-only ctx. Only when a signal that needs
 	// it is enabled (breach / digital_age / linked_ids).
-	if o.static != nil && phoneStaticNeeded(yc) {
+	if o.deps.Static != nil && phoneStaticNeeded(yc) {
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
 			staticStart := time.Now()
-			doc, err := o.static.GetInorganic(ctx, staticID)
+			doc, err := o.deps.Static.GetInorganic(ctx, staticID)
 			tm.since("static_phone", staticStart)
 			if err == nil {
 				static = doc
@@ -254,15 +194,15 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 		}()
 	}
 
-	if o.phoneMeta != nil && phoneMetaOn(yc) {
+	if o.deps.PhoneMeta != nil && phoneMetaOn(yc) {
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
 			metaStart := time.Now()
 			// Meta cache (EmailPhoneMeta) read: keyed by the international number.
 			// A hit replays the stored PhoneMeta and skips the meta RPCs.
-			if o.mcache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
-				if raw, hit, err := o.mcache.Get(ctx, identifier, time.Now().Unix()); err == nil && hit {
+			if o.deps.MetaCache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
+				if raw, hit, err := o.deps.MetaCache.Get(ctx, identifier, time.Now().Unix()); err == nil && hit {
 					var pm model.PhoneMeta
 					if json.Unmarshal(raw, &pm) == nil {
 						if pm.Revocations == nil {
@@ -275,7 +215,7 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 				}
 			}
 			national := nationalFromIdentifier(identifier)
-			r := o.phoneMeta.Fetch(ctx, national, identifier, postpaidOn(yc))
+			r := o.deps.PhoneMeta.Fetch(ctx, national, identifier, postpaidOn(yc))
 			tm.since("meta_phone", metaStart)
 			revocations := r.Revocations
 			if revocations == nil {
@@ -291,9 +231,9 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 				Revocations: revocations,
 			}
 			// Write-back fire-and-forget.
-			if o.mcache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
+			if o.deps.MetaCache != nil && yc != nil && yc.IsPhoneInfoCachingEnabled() {
 				pm := phoneMeta
-				go func() { _ = o.mcache.Put(context.Background(), identifier, pm, time.Now().Unix()) }()
+				go func() { _ = o.deps.MetaCache.Put(context.Background(), identifier, pm, time.Now().Unix()) }()
 			}
 		}()
 	}
@@ -308,8 +248,8 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 	}
 	// Phone breach: computed from static_data (pawn_service.get_breach_details).
 	// With no static repo / no match it yields the empty not-found block.
-	if o.breach != nil && breachOn(yc) {
-		sec.PrimaryData.BreachDetails = o.breach.Phone(identifier, staticID, static)
+	if o.deps.Breach != nil && breachOn(yc) {
+		sec.PrimaryData.BreachDetails = o.deps.Breach.Phone(identifier, staticID, static)
 	}
 	// digital_age + linked_ids derived from static_data, gated per-key. Stashed on
 	// the section intelligence_data BEFORE applyIntelligence, which then merges the
@@ -339,12 +279,12 @@ func (o *Orchestrator) buildEmailSection(ctx context.Context, email string, tm *
 
 	// static_data feeds email linked_ids (primary_ph). digital_age for email uses
 	// the HIBP breach dates, not static_data. Fetch only when linked_ids is on.
-	if o.static != nil && emailStaticNeeded(yc) {
+	if o.deps.Static != nil && emailStaticNeeded(yc) {
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
 			staticStart := time.Now()
-			doc, err := o.static.GetInorganic(ctx, email)
+			doc, err := o.deps.Static.GetInorganic(ctx, email)
 			tm.since("static_email", staticStart)
 			if err == nil {
 				static = doc
@@ -352,14 +292,14 @@ func (o *Orchestrator) buildEmailSection(ctx context.Context, email string, tm *
 		}()
 	}
 
-	if o.emailMeta != nil && emailMetaOn(yc) {
+	if o.deps.EmailMeta != nil && emailMetaOn(yc) {
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
 			metaStart := time.Now()
 			// Meta cache (EmailPhoneMeta) read: keyed by the email address.
-			if o.mcache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
-				if raw, hit, err := o.mcache.Get(ctx, email, time.Now().Unix()); err == nil && hit {
+			if o.deps.MetaCache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
+				if raw, hit, err := o.deps.MetaCache.Get(ctx, email, time.Now().Unix()); err == nil && hit {
 					var em model.EmailMeta
 					if json.Unmarshal(raw, &em) == nil {
 						emailMeta = &em
@@ -368,7 +308,7 @@ func (o *Orchestrator) buildEmailSection(ctx context.Context, email string, tm *
 					}
 				}
 			}
-			r := o.emailMeta.Fetch(ctx, email)
+			r := o.deps.EmailMeta.Fetch(ctx, email)
 			tm.since("meta_email", metaStart)
 			em := &model.EmailMeta{Email: email, IsDisposable: r.IsDisposable}
 			if r.DomainAttributes != nil {
@@ -376,19 +316,19 @@ func (o *Orchestrator) buildEmailSection(ctx context.Context, email string, tm *
 			}
 			emailMeta = em
 			// Write-back fire-and-forget.
-			if o.mcache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
+			if o.deps.MetaCache != nil && yc != nil && yc.IsEmailInfoCachingEnabled() {
 				m := em
-				go func() { _ = o.mcache.Put(context.Background(), email, m, time.Now().Unix()) }()
+				go func() { _ = o.deps.MetaCache.Put(context.Background(), email, m, time.Now().Unix()) }()
 			}
 		}()
 	}
 
-	if o.breach != nil && breachOn(yc) {
+	if o.deps.Breach != nil && breachOn(yc) {
 		inner.Add(1)
 		go func() {
 			defer inner.Done()
 			breachStart := time.Now()
-			breachDet = o.breach.Email(ctx, email)
+			breachDet = o.deps.Breach.Email(ctx, email)
 			tm.since("breach_email", breachStart)
 		}()
 	}
@@ -440,7 +380,7 @@ func (o *Orchestrator) applyIntelligence(ctx context.Context, req *model.Persona
 	// the ml analytic_response identical to prod.
 	delete(youResponse, "common_data")
 
-	out := o.intel.Run(ctx, intelligence.Input{
+	out := o.deps.Intel.Run(ctx, intelligence.Input{
 		HasPhone: req.Phone != nil,
 		HasEmail: req.Email != "",
 		// Tenant is the authenticated tenant username (tenantapp.id), matching

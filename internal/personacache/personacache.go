@@ -68,6 +68,18 @@ func New(client *awsclients.DynamoClient, table string) *Repo {
 	return &Repo{client: client, table: table, hashingCompliant: true}
 }
 
+// DynamoAPI is the minimal DynamoDB surface a Repo needs (GetItem/PutItem on the
+// PK "id"). *awsclients.DynamoClient satisfies it in production; tests supply a
+// fake. Exported so other packages' tests can build a Repo without AWS.
+type DynamoAPI = dynamoGetPutter
+
+// NewWithClient builds a Repo over any DynamoAPI (for tests in other packages
+// that need a working cache without AWS). hashingCompliant selects the key form
+// (true => md5, the production default). A nil client or empty table disables it.
+func NewWithClient(client DynamoAPI, table string, hashingCompliant bool) *Repo {
+	return newWithClient(client, table, hashingCompliant)
+}
+
 // newWithClient is the test seam: build over any dynamoGetPutter.
 func newWithClient(client dynamoGetPutter, table string, hashingCompliant bool) *Repo {
 	if client == nil || table == "" {
