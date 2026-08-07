@@ -8,17 +8,23 @@ var DisabledWebsitesDefault = []string{
 	"ATLASSIAN", "ZEE5", "ZOMATO", "EVERNOTE", "ZERODHA",
 }
 
-// TokenPoolSites is the set of sites that require the token pool
-// (WEBSITE_TOKEN_POOL_CONFIG_DEFAULT). These are OUT of scope for go-you (no
-// token infrastructure) and are excluded from every crawl set as a safety net,
-// independent of tenant config. Populated as crawlers are triaged in Phase 2;
-// the exclusion is also enforced by simply never registering these crawlers,
-// but keeping the set here makes the filter explicit and testable.
+// TokenPoolSites is the set of sites that, in Python, require the background
+// token pool (WEBSITE_TOKEN_POOL_CONFIG_DEFAULT) AND are NOT implemented in
+// go-you. They are excluded from every crawl set as a safety net, independent of
+// tenant config, so a tenant that enables an unported token site does not get an
+// always-erroring crawler.
+//
+// NOTE: EVENTBRITE, SNAPDEAL, and ZOHO were originally listed here (token-pool in
+// Python) but are now ported as STATELESS two-step crawlers (Phase B) that fetch
+// their token inline — they no longer need the pool, so they are DELIBERATELY NOT
+// in this set and DO run when a tenant enables them. Only genuinely-unported
+// token sites remain (SWIGGY needs an external vendor service; APPLE/NETFLIX/
+// LINKEDIN/MICROSOFT/SAMSUNG/DIGILOCKER/etc. are hard-tier, not ported).
 var TokenPoolSites = map[string]struct{}{
-	"APPLE": {}, "EVENTBRITE": {}, "EVERNOTE": {}, "DIGILOCKER": {},
+	"APPLE": {}, "EVERNOTE": {}, "DIGILOCKER": {},
 	"ZERODHA": {}, "BPCL_GAS": {}, "PAYU_UPI": {}, "SWIGGY": {},
-	"NETFLIX": {}, "LINKEDIN": {}, "MICROSOFT": {}, "SNAPDEAL": {},
-	"SAMSUNG": {}, "ZOHO": {}, "EASYGOSMS": {},
+	"NETFLIX": {}, "LINKEDIN": {}, "MICROSOFT": {},
+	"SAMSUNG": {}, "EASYGOSMS": {},
 	// NOTE: TWITTER is token-pool for the PHONE flow but token-free for EMAIL
 	// (email_available.json). It is therefore NOT listed here; the email crawler
 	// registers TWITTER and the phone flow simply has no TWITTER crawler.
