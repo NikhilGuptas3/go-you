@@ -17,6 +17,7 @@ import (
 	"github.com/sign3labs/go-you/internal/intelligence"
 	"github.com/sign3labs/go-you/internal/meta"
 	"github.com/sign3labs/go-you/internal/metacache"
+	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
 	"github.com/sign3labs/go-you/internal/personacache"
 	"github.com/sign3labs/go-you/internal/staticdata"
@@ -239,7 +240,7 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 	}
 	inner.Wait()
 
-	recordCrawlerTimings(tm, results)
+	recordCrawlerTimings(ctx, tm, results)
 	// Section key is the international number (prod: phone_data.primary_data.key
 	// = login_id.international_number, e.g. "+917667701982").
 	sec := buildSection("phone", identifier, results)
@@ -334,7 +335,7 @@ func (o *Orchestrator) buildEmailSection(ctx context.Context, email string, tm *
 	}
 	inner.Wait()
 
-	recordCrawlerTimings(tm, results)
+	recordCrawlerTimings(ctx, tm, results)
 	sec := buildSection("email", email, results)
 	if emailMeta != nil {
 		sec.PrimaryData.EmailMeta = emailMeta
@@ -398,12 +399,15 @@ func (o *Orchestrator) applyIntelligence(ctx context.Context, req *model.Persona
 
 	if resp.PhoneData != nil && len(out.PhoneIntel) > 0 {
 		resp.PhoneData.IntelligenceData = mergeIntelligenceData(resp.PhoneData.IntelligenceData, out.PhoneIntel)
+		recordIntelFeatures(tenantID, "phone", out.PhoneIntel)
 	}
 	if resp.EmailData != nil && len(out.EmailIntel) > 0 {
 		resp.EmailData.IntelligenceData = mergeIntelligenceData(resp.EmailData.IntelligenceData, out.EmailIntel)
+		recordIntelFeatures(tenantID, "email", out.EmailIntel)
 	}
 	if len(out.CommonIntel) > 0 {
 		resp.IntelligenceData = mapToIntelligenceData(out.CommonIntel)
+		recordIntelFeatures(tenantID, "common", out.CommonIntel)
 	}
 	// Prediction: reshaped to {identity_fraud_score: score} or {error:true} in
 	// Phase 6 (cleanup_prediction); here we stash the raw outcome, gated by the
@@ -411,10 +415,29 @@ func (o *Orchestrator) applyIntelligence(ctx context.Context, req *model.Persona
 	if yc.Prediction {
 		if out.PredictionError || out.PredictionScore == nil {
 			resp.Prediction = map[string]any{"error": true}
+			metrics.YouIntelligence.WithLabelValues(tenantID, "prediction", "error").Inc()
 		} else {
 			// Placeholder key; cleanup_prediction renames to the tenant's
 			// output_key_name (default identity_fraud_score) in Phase 6.
 			resp.Prediction = map[string]any{"predicted_score": *out.PredictionScore}
+			metrics.YouIntelligence.WithLabelValues(tenantID, "prediction", "ok").Inc()
 		}
+	}
+}
+
+// recordIntelFeatures emits one you_intelligence counter per ml_service feature
+// returned for a section, matching hey-you's per-feature outcome tracking. The
+// status is coarse: a feature whose value carries {error:true} is "error",
+// otherwise "ok". feature_name is the ml key (score, digital_age, linked_ids,
+// …) — a bounded set the ml_service defines, so the label stays low-cardinality.
+func recordIntelFeatures(tenant, section string, feats map[string]any) {
+	for name, v := range feats {
+		status := "ok"
+		if m, ok := v.(map[string]any); ok {
+			if e, ok := m["error"].(bool); ok && e {
+				status = "error"
+			}
+		}
+		metrics.YouIntelligence.WithLabelValues(tenant, section+"."+name, status).Inc()
 	}
 }

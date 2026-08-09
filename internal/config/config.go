@@ -59,6 +59,13 @@ type Config struct {
 
 	// Crawl behaviour
 	HTTPTimeout time.Duration // per external crawler request
+
+	// Logging. LogLevel is debug|info|warn|error (default info); it also enables
+	// the [DEBUG_*] lines when set to debug. LogFormat is reserved (only "text"
+	// is implemented — hey-you-style plain lines on stderr). Both optional so a
+	// missing value never fails the pod.
+	LogLevel  string
+	LogFormat string
 }
 
 // Load reads config from the environment. It returns an error listing every
@@ -88,6 +95,8 @@ func Load() (*Config, error) {
 		IPQSToken:          os.Getenv("IPQS_TOKEN"),           // optional; empty => skip meta
 		Namespace:          os.Getenv("NAMESPACE"),            // optional; drives configs_<ns> override
 		HTTPTimeout:        time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,
+		LogLevel:           getEnv("LOG_LEVEL", "info"),  // debug|info|warn|error
+		LogFormat:          getEnv("LOG_FORMAT", "text"), // reserved; only text implemented
 	}
 
 	if len(missing) > 0 {

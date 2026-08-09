@@ -23,23 +23,29 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/sign3labs/go-you/internal/awsclients"
+	"github.com/sign3labs/go-you/internal/logger"
 	"github.com/sign3labs/go-you/internal/model"
 )
+
+// pcLog is this package's component logger ("personacache:<func> - …").
+var pcLog = logger.Component("personacache")
 
 // TTLSeconds is the organic-persona expiry (Python organic_persona_expiry_secs).
 const TTLSeconds int64 = 1296000 // 15 days
 
-// debugCache, set from DEBUG_CACHE=1, logs each persona-cache read (HIT/MISS)
-// and write so you can confirm whether data is being pulled from / pushed to
-// DynamoDB. Off by default — no behavior change.
-var debugCache = os.Getenv("DEBUG_CACHE") == "1"
+// debugCacheEnv is the legacy DEBUG_CACHE=1 opt-in.
+var debugCacheEnv = os.Getenv("DEBUG_CACHE") == "1"
+
+// debugCache reports whether persona-cache diagnostics should be logged: the
+// legacy DEBUG_CACHE=1 env, or LOG_LEVEL=debug. Folds the old env-gate into the
+// unified log level, backward-compatible.
+func debugCache() bool { return debugCacheEnv || logger.DebugEnabled() }
 
 // dynamoGetPutter is the subset of *awsclients.DynamoClient this package needs;
 // an interface so tests can supply a fake without AWS.
@@ -113,40 +119,40 @@ func (r *Repo) Get(ctx context.Context, key string, now int64) (resp *model.Pers
 	}
 	item, err := r.client.GetItem(ctx, r.table, key)
 	if err != nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] persona GET table=%s key=%s ERROR: %v", r.table, key, err)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] persona GET ERROR", "table", r.table, "key", key, "err", err.Error())
 		}
 		return nil, false, err
 	}
 	if item == nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] persona GET table=%s key=%s -> MISS (no item)", r.table, key)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] persona GET MISS (no item)", "table", r.table, "key", key)
 		}
 		return nil, false, nil // miss
 	}
 	// TTL check: ttl is a unix-second expiry timestamp. Expired => treat as miss.
 	if ttl, ok := attrInt(item, "ttl"); ok && ttl > 0 && now >= ttl {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] persona GET table=%s key=%s -> MISS (expired ttl=%d now=%d)", r.table, key, ttl, now)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] persona GET MISS (expired)", "table", r.table, "key", key, "ttl", ttl, "now", now)
 		}
 		return nil, false, nil
 	}
 	doc, ok := attrStr(item, "doc")
 	if !ok || doc == "" {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] persona GET table=%s key=%s -> MISS (empty doc)", r.table, key)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] persona GET MISS (empty doc)", "table", r.table, "key", key)
 		}
 		return nil, false, nil
 	}
 	out, err := decodeDoc(doc)
 	if err != nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] persona GET table=%s key=%s -> decode ERROR: %v", r.table, key, err)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] persona GET decode ERROR", "table", r.table, "key", key, "err", err.Error())
 		}
 		return nil, false, err
 	}
-	if debugCache {
-		log.Printf("[DEBUG_CACHE] persona GET table=%s key=%s -> HIT (%d bytes doc)", r.table, key, len(doc))
+	if debugCache() {
+		pcLog.Debug("[DEBUG_CACHE] persona GET HIT", "table", r.table, "key", key, "bytes", len(doc))
 	}
 	return out, true, nil
 }
@@ -169,11 +175,11 @@ func (r *Repo) Put(ctx context.Context, key string, resp *model.PersonaResponse,
 		"timestamp": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now, 10)},
 	}
 	err = r.client.PutItem(ctx, r.table, item)
-	if debugCache {
+	if debugCache() {
 		if err != nil {
-			log.Printf("[DEBUG_CACHE] persona PUT table=%s key=%s ERROR: %v", r.table, key, err)
+			pcLog.Debug("[DEBUG_CACHE] persona PUT ERROR", "table", r.table, "key", key, "err", err.Error())
 		} else {
-			log.Printf("[DEBUG_CACHE] persona PUT table=%s key=%s OK (%d bytes doc, ttl=%d)", r.table, key, len(doc), now+TTLSeconds)
+			pcLog.Debug("[DEBUG_CACHE] persona PUT OK", "table", r.table, "key", key, "bytes", len(doc), "ttl", now+TTLSeconds)
 		}
 	}
 	return err
@@ -215,39 +221,39 @@ func (r *Repo) GetDoc(ctx context.Context, key string, now int64) (doc map[strin
 	}
 	item, err := r.client.GetItem(ctx, r.table, key)
 	if err != nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] enrich GET table=%s key=%s ERROR: %v", r.table, key, err)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] enrich GET ERROR", "table", r.table, "key", key, "err", err.Error())
 		}
 		return nil, false, err
 	}
 	if item == nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] enrich GET table=%s key=%s -> MISS (no item)", r.table, key)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] enrich GET MISS (no item)", "table", r.table, "key", key)
 		}
 		return nil, false, nil
 	}
 	if ttl, ok := attrInt(item, "ttl"); ok && ttl > 0 && now >= ttl {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] enrich GET table=%s key=%s -> MISS (expired ttl=%d now=%d)", r.table, key, ttl, now)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] enrich GET MISS (expired)", "table", r.table, "key", key, "ttl", ttl, "now", now)
 		}
 		return nil, false, nil
 	}
 	encoded, ok := attrStr(item, "doc")
 	if !ok || encoded == "" {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] enrich GET table=%s key=%s -> MISS (empty doc)", r.table, key)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] enrich GET MISS (empty doc)", "table", r.table, "key", key)
 		}
 		return nil, false, nil
 	}
 	out, err := decodeMap(encoded)
 	if err != nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] enrich GET table=%s key=%s -> decode ERROR: %v", r.table, key, err)
+		if debugCache() {
+			pcLog.Debug("[DEBUG_CACHE] enrich GET decode ERROR", "table", r.table, "key", key, "err", err.Error())
 		}
 		return nil, false, err
 	}
-	if debugCache {
-		log.Printf("[DEBUG_CACHE] enrich GET table=%s key=%s -> HIT (%d bytes doc, %d checks)", r.table, key, len(encoded), len(out))
+	if debugCache() {
+		pcLog.Debug("[DEBUG_CACHE] enrich GET HIT", "table", r.table, "key", key, "bytes", len(encoded), "checks", len(out))
 	}
 	return out, true, nil
 }
@@ -271,11 +277,11 @@ func (r *Repo) PutDoc(ctx context.Context, key string, doc map[string]any, now i
 		"timestamp": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now, 10)},
 	}
 	err = r.client.PutItem(ctx, r.table, item)
-	if debugCache {
+	if debugCache() {
 		if err != nil {
-			log.Printf("[DEBUG_CACHE] enrich PUT table=%s key=%s ERROR: %v", r.table, key, err)
+			pcLog.Debug("[DEBUG_CACHE] enrich PUT ERROR", "table", r.table, "key", key, "err", err.Error())
 		} else {
-			log.Printf("[DEBUG_CACHE] enrich PUT table=%s key=%s OK (%d bytes doc, ttl=%d)", r.table, key, len(encoded), now+TTLSeconds)
+			pcLog.Debug("[DEBUG_CACHE] enrich PUT OK", "table", r.table, "key", key, "bytes", len(encoded), "ttl", now+TTLSeconds)
 		}
 	}
 	return err

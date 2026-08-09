@@ -15,21 +15,25 @@ package awsclients
 
 import (
 	"context"
-	"log"
 
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	awscfg "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/aws-sdk-go-v2/service/kinesis"
+
+	"github.com/sign3labs/go-you/internal/logger"
 )
+
+// awsLog is this package's component logger ("awsclients:<func> - …").
+var awsLog = logger.Component("awsclients")
 
 // loadConfig loads the shared AWS config once (default credential chain +
 // region). Returned to both clients so credentials are resolved a single time.
 func loadConfig(ctx context.Context) (awssdk.Config, bool) {
 	cfg, err := awscfg.LoadDefaultConfig(ctx)
 	if err != nil {
-		log.Printf("awsclients: LoadDefaultConfig failed (AWS services disabled): %v", err)
+		awsLog.Warn("LoadDefaultConfig failed (AWS services disabled)", "err", err.Error())
 		return awssdk.Config{}, false
 	}
 	return cfg, true

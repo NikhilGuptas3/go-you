@@ -32,17 +32,26 @@ import (
 	"github.com/sign3labs/go-you/internal/crawler/upi"
 	"github.com/sign3labs/go-you/internal/handler"
 	"github.com/sign3labs/go-you/internal/intelligence"
+	"github.com/sign3labs/go-you/internal/logger"
 	"github.com/sign3labs/go-you/internal/meta"
 	"github.com/sign3labs/go-you/internal/metacache"
 	"github.com/sign3labs/go-you/internal/personacache"
 	"github.com/sign3labs/go-you/internal/staticdata"
 )
 
+// mainLog is the startup/lifecycle component logger ("main:<func> - …").
+var mainLog = logger.Component("main")
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
+		// Logger not yet initialised; use the stdlib default (stderr) for this
+		// one fatal so a misconfigured pod still surfaces the reason.
 		log.Fatalf("config: %v", err)
 	}
+	// Initialise the application logger first so every subsequent line shares the
+	// hey-you-style format. Level from LOG_LEVEL (default info).
+	logger.Init(cfg.LogLevel)
 
 	localDev := os.Getenv("LOCAL_DEV") == "true"
 
@@ -51,24 +60,24 @@ func main() {
 	var db *sql.DB
 	var authMiddleware func(http.Handler) http.Handler
 	if localDev {
-		log.Printf("LOCAL_DEV=true: skipping MySQL, using fake auth (DO NOT use in prod)")
+		mainLog.Warn("LOCAL_DEV=true: skipping MySQL, using fake auth (DO NOT use in prod)")
 		authMiddleware = auth.NoAuthMiddleware
 	} else {
 		db, err = sql.Open("mysql", cfg.MySQLDSN)
 		if err != nil {
-			log.Fatalf("mysql open: %v", err)
+			logger.Fatal("mysql open failed", "err", err.Error())
 		}
 		db.SetMaxOpenConns(20)
 		db.SetMaxIdleConns(10)
 		db.SetConnMaxLifetime(5 * time.Minute)
 		if err := db.Ping(); err != nil {
-			log.Fatalf("mysql ping: %v", err)
+			logger.Fatal("mysql ping failed", "err", err.Error())
 		}
 		defer db.Close()
 
 		authr, err := auth.New(db)
 		if err != nil {
-			log.Fatalf("auth init: %v", err)
+			logger.Fatal("auth init failed", "err", err.Error())
 		}
 		authMiddleware = authr.Middleware
 	}
@@ -82,7 +91,7 @@ func main() {
 		appCfg = appconfig.NewFetcher(db, cfg.Namespace)
 		appCfg.Start()
 		defer appCfg.Stop()
-		log.Printf("config fetcher started (namespace=%q)", cfg.Namespace)
+		mainLog.Info("config fetcher started", "namespace", cfg.Namespace)
 	}
 
 	// --- Proxy (single static upstream, or direct if unset) ---
@@ -90,11 +99,11 @@ func main() {
 	if cfg.ProxyURL != "" {
 		proxyURL, err = url.Parse(cfg.ProxyURL)
 		if err != nil {
-			log.Fatalf("invalid PROXY_URL: %v", err)
+			logger.Fatal("invalid PROXY_URL", "err", err.Error())
 		}
-		log.Printf("crawling via proxy %s", proxyURL.Host)
+		mainLog.Info("crawling via proxy", "host", proxyURL.Host)
 	} else {
-		log.Printf("crawling direct (no proxy configured)")
+		mainLog.Info("crawling direct (no proxy configured)")
 	}
 
 	// --- Crawlers (token-free only) ---
@@ -192,9 +201,9 @@ func main() {
 		emailMeta = meta.NewEmailMetaService(appCfg, proxyURL, cfg.HTTPTimeout)
 		breachSvc = breach.NewService(appCfg, cfg.HTTPTimeout)
 		intelSvc = intelligence.NewService(appCfg, cfg.HTTPTimeout)
-		log.Printf("meta + breach + intelligence enabled")
+		mainLog.Info("meta + breach + intelligence enabled")
 	} else {
-		log.Printf("meta + breach + intelligence disabled (LOCAL_DEV: no config fetcher)")
+		mainLog.Info("meta + breach + intelligence disabled (LOCAL_DEV: no config fetcher)")
 	}
 
 	// --- Static persona repo: feeds phone breach, digital_age, linked_ids, and
@@ -209,14 +218,14 @@ func main() {
 	if !localDev && cfg.StaticMySQLDSN != "" {
 		staticDB, err = sql.Open("mysql", cfg.StaticMySQLDSN)
 		if err != nil {
-			log.Printf("static mysql open failed (static lane disabled): %v", err)
+			mainLog.Warn("static mysql open failed (static lane disabled)", "err", err.Error())
 			staticDB = nil
 		} else {
 			staticDB.SetMaxOpenConns(20)
 			staticDB.SetMaxIdleConns(10)
 			staticDB.SetConnMaxLifetime(5 * time.Minute)
 			if err := staticDB.Ping(); err != nil {
-				log.Printf("static mysql ping failed (static lane disabled): %v", err)
+				mainLog.Warn("static mysql ping failed (static lane disabled)", "err", err.Error())
 				_ = staticDB.Close()
 				staticDB = nil
 			} else {
@@ -226,9 +235,9 @@ func main() {
 	}
 	staticRepo := staticdata.New(staticDB)
 	if staticRepo != nil {
-		log.Printf("static persona repo enabled (phone breach + digital_age + linked_ids + ml static_data)")
+		mainLog.Info("static persona repo enabled (phone breach + digital_age + linked_ids + ml static_data)")
 	} else {
-		log.Printf("static persona repo disabled (no STATIC_MYSQL_DSN): phone breach empty, digital_age error")
+		mainLog.Info("static persona repo disabled (no STATIC_MYSQL_DSN): phone breach empty, digital_age error")
 	}
 
 	// --- AWS services (optional): DynamoDB persona + meta caches, Kinesis
@@ -253,11 +262,11 @@ func main() {
 		}
 	}
 	logEnabled := func(name string, on bool) {
+		state := "disabled"
 		if on {
-			log.Printf("%s enabled", name)
-		} else {
-			log.Printf("%s disabled", name)
+			state = "enabled"
 		}
+		mainLog.Info("dependency", "name", name, "state", state)
 	}
 	logEnabled("persona cache (DynamoDB OrganicData)", personaCache != nil)
 	logEnabled("meta cache (DynamoDB EmailPhoneMeta)", metaCache != nil)
@@ -290,7 +299,15 @@ func main() {
 
 	// --- Router ---
 	r := chi.NewRouter()
-	r.Use(middleware.Recoverer)
+	// Middleware order matters: RealIP normalises the client IP from the proxy
+	// headers first; RequestID mints/propagates the correlation id (so AccessLog
+	// and the handler share it); AccessLog logs one line per real request; the
+	// logging Recoverer turns a panic into a logged 500. Recoverer is outermost
+	// so it also catches panics in the inner middleware.
+	r.Use(handler.Recoverer)
+	r.Use(middleware.RealIP)
+	r.Use(handler.RequestID)
+	r.Use(handler.AccessLog)
 
 	// Liveness — does not require auth. Always 200 if the process is up; a
 	// transient DB blip must not kill the pod (that's readiness' job, and the
@@ -329,16 +346,16 @@ func main() {
 
 	// Graceful shutdown.
 	go func() {
-		log.Printf("go-you listening on :%s", cfg.Port)
+		mainLog.Info("go-you listening", "port", cfg.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server: %v", err)
+			logger.Fatal("server error", "err", err.Error())
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
-	log.Println("shutting down...")
+	mainLog.Info("shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)

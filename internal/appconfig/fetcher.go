@@ -14,10 +14,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/sign3labs/go-you/internal/logger"
 )
+
+// cfgLog is this package's component logger ("appconfig:<func> - …").
+var cfgLog = logger.Component("appconfig")
 
 // refreshInterval matches config_fetcher.py:34 (5 seconds).
 const refreshInterval = 5 * time.Second
@@ -94,7 +98,7 @@ func (f *Fetcher) Get(key string, def any) any {
 // fatal — Get falls back to defaults, exactly like the Python service.
 func (f *Fetcher) Start() {
 	f.auditID = f.latestAuditID()
-	log.Printf("appconfig: startup audit id %d", f.auditID)
+	cfgLog.Info("startup audit id", "audit_id", f.auditID)
 	f.fetchAllConfigs()
 	go f.refreshLoop()
 }
@@ -120,7 +124,7 @@ func (f *Fetcher) refreshLoop() {
 func parseValue(key, value string) any {
 	var parsed any
 	if err := json.Unmarshal([]byte(value), &parsed); err != nil {
-		log.Printf("appconfig: parse failed for key %q: %v", key, err)
+		cfgLog.Warn("parse failed for key", "key", key, "err", err.Error())
 		return map[string]any{}
 	}
 	return parsed
@@ -141,7 +145,7 @@ func (f *Fetcher) fetchAllConfigs() {
 	for {
 		keys, err := f.allKeys(offset, keyPageLimit)
 		if err != nil {
-			log.Printf("appconfig: key page fetch failed at offset %d: %v", offset, err)
+			cfgLog.Warn("key page fetch failed", "offset", offset, "err", err.Error())
 			return
 		}
 		for _, k := range keys {
@@ -185,7 +189,7 @@ func (f *Fetcher) refreshKey(key string) {
 	var value sql.NullString
 	base := fmt.Sprintf("SELECT `value` FROM `%s` WHERE `key` = ?", f.tableName)
 	if err := f.db.QueryRow(base, key).Scan(&value); err != nil && err != sql.ErrNoRows {
-		log.Printf("appconfig: fetch key %q failed: %v", key, err)
+		cfgLog.Warn("fetch key failed", "key", key, "err", err.Error())
 		return
 	}
 	if f.overrideTableName != "" {
@@ -213,7 +217,7 @@ func (f *Fetcher) latestAuditID() int64 {
 	var id sql.NullInt64
 	if err := f.db.QueryRow(q, f.configTable(), f.tableName).Scan(&id); err != nil {
 		if err != sql.ErrNoRows {
-			log.Printf("appconfig: latest audit id failed: %v", err)
+			cfgLog.Warn("latest audit id failed", "err", err.Error())
 		}
 		return -1
 	}
@@ -236,7 +240,7 @@ func (f *Fetcher) fetchUpdates() {
 		f.auditTableName)
 	rows, err := f.db.Query(q, f.auditID, f.configTable(), f.tableName)
 	if err != nil {
-		log.Printf("appconfig: audit delta query failed: %v", err)
+		cfgLog.Warn("audit delta query failed", "err", err.Error())
 		return
 	}
 	defer rows.Close()
@@ -244,7 +248,7 @@ func (f *Fetcher) fetchUpdates() {
 	for rows.Next() {
 		var k sql.NullString
 		if err := rows.Scan(&k); err != nil {
-			log.Printf("appconfig: audit delta scan failed: %v", err)
+			cfgLog.Warn("audit delta scan failed", "err", err.Error())
 			return
 		}
 		if k.Valid && k.String != "" {
@@ -252,7 +256,7 @@ func (f *Fetcher) fetchUpdates() {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("appconfig: audit delta rows err: %v", err)
+		cfgLog.Warn("audit delta rows err", "err", err.Error())
 		return
 	}
 	for k := range seen {

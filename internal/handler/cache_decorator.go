@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
 )
 
@@ -65,13 +66,18 @@ func (c *cacheDecorator) Gate(o *Orchestrator, st *laneState) bool {
 		return true // caching off: run normally, no read/write
 	}
 	c.now = time.Now().Unix()
-	c.key = o.deps.PersonaCache.Key(c.inner.cacheKind(), c.inner.loginID(st), st.tenantID)
+	kind := c.inner.cacheKind()
+	c.key = o.deps.PersonaCache.Key(kind, c.inner.loginID(st), st.tenantID)
 	if cached, hit, err := o.deps.PersonaCache.Get(context.Background(), c.key, c.now); err == nil && hit {
 		c.hit = true
-		c.inner.setSection(st.resp, sectionFromCache(cached, c.inner.cacheKind()))
-		st.tm.record("cache_"+c.inner.cacheKind(), 0)
+		c.inner.setSection(st.resp, sectionFromCache(cached, kind))
+		st.tm.record("cache_"+kind, 0)
+		// hey-you carries hit/miss as the STATUS LABEL of one counter
+		// (real_time_cache), not as separate metrics.
+		metrics.RealTimeCache.WithLabelValues(kind, "hit").Inc()
 		return false // hit: skip the inner Run (no crawl)
 	}
+	metrics.RealTimeCache.WithLabelValues(kind, "miss").Inc()
 	return true // miss: run the inner lane
 }
 

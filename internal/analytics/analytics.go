@@ -21,18 +21,24 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 
 	"github.com/sign3labs/go-you/internal/awsclients"
+	"github.com/sign3labs/go-you/internal/logger"
 )
 
 // EventName for the /v1/persona sync path (Python default "osint").
 const EventName = "osint"
 
-// debugCache, from DEBUG_CACHE=1, logs a line on each successful Kinesis publish
-// (shares the flag with the caches). Off by default.
-var debugCache = os.Getenv("DEBUG_CACHE") == "1"
+// aLog is this package's component logger ("analytics:<func> - …").
+var aLog = logger.Component("analytics")
+
+// debugCacheEnv is the legacy DEBUG_CACHE=1 opt-in (shared with the caches).
+var debugCacheEnv = os.Getenv("DEBUG_CACHE") == "1"
+
+// debugCache reports whether a publish diagnostic should be logged: legacy
+// DEBUG_CACHE=1 env, or LOG_LEVEL=debug.
+func debugCache() bool { return debugCacheEnv || logger.DebugEnabled() }
 
 // piiHashKeys are the request sub-keys md5-hashed in place before publish
 // (Python get_analytic_hashing_keys default ['request.email','request.phone']).
@@ -93,7 +99,7 @@ func (s *Sink) Push(ctx context.Context, ev Event) {
 	}
 	defer func() {
 		if rec := recover(); rec != nil {
-			log.Printf("analytics: Push panic recovered: %v", rec)
+			aLog.Error("Push panic recovered", "rid", ev.RequestID, "panic", fmt.Sprint(rec))
 		}
 	}()
 
@@ -104,15 +110,16 @@ func (s *Sink) Push(ctx context.Context, ev Event) {
 
 	data, err := json.Marshal(ev)
 	if err != nil {
-		log.Printf("analytics: marshal failed: %v", err)
+		aLog.Warn("marshal failed", "rid", ev.RequestID, "err", err.Error())
 		return
 	}
 	if err := s.client.Publish(ctx, s.stream, data, ev.TenantID); err != nil {
-		log.Printf("analytics: publish failed (swallowed): %v", err)
+		aLog.Warn("publish failed (swallowed)", "rid", ev.RequestID, "tenant", ev.TenantID, "err", err.Error())
 		return
 	}
-	if debugCache {
-		log.Printf("[DEBUG_CACHE] analytics PUBLISH stream=%s tenant=%s reqId=%s OK (%d bytes)", s.stream, ev.TenantID, ev.RequestID, len(data))
+	if debugCache() {
+		aLog.Debug("[DEBUG_CACHE] analytics PUBLISH",
+			"stream", s.stream, "tenant", ev.TenantID, "rid", ev.RequestID, "bytes", len(data))
 	}
 }
 

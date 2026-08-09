@@ -18,14 +18,19 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sign3labs/go-you/internal/logger"
+	"github.com/sign3labs/go-you/internal/metrics"
 )
+
+// intelLog is this package's component logger ("intelligence:<func> - …").
+var intelLog = logger.Component("intelligence")
 
 // debugML is set once from the DEBUG_ML env var. When true, callMLService logs
 // the feature_list, the outbound YOU payload key shape, and the raw ml_service
@@ -166,10 +171,11 @@ func (s *Service) callMLService(ctx context.Context, mlCfg map[string]any, in In
 	if err != nil {
 		return map[string]any{}
 	}
-	if debugML {
+	if debugML || logger.DebugEnabled() {
 		flJSON, _ := json.Marshal(featureList)
-		log.Printf("[DEBUG_ML] feature_list=%s", flJSON)
-		log.Printf("[DEBUG_ML] outbound YOU payload (%d bytes): %s", len(body), truncate(string(body), 8000))
+		intelLog.Debug("[DEBUG_ML] outbound",
+			"feature_list", string(flJSON),
+			"payload_bytes", len(body), "payload", truncate(string(body), 8000))
 	}
 	timeout := s.timeout
 	if t, ok := mlCfg["timeout"].(float64); ok && t > 0 {
@@ -187,17 +193,21 @@ func (s *Service) callMLService(ctx context.Context, mlCfg map[string]any, in In
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("intelligence: ml_service call failed: %v", err)
+		// hey-you: ml_service_counter[tenant, stage, status].
+		metrics.MLServiceCounter.WithLabelValues(in.Tenant, "call", "error").Inc()
+		intelLog.Warn("ml_service call failed", "tenant", in.Tenant, "err", err.Error())
 		return map[string]any{}
 	}
 	defer resp.Body.Close()
+	metrics.MLServiceCounter.WithLabelValues(in.Tenant, "call", "ok").Inc()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return map[string]any{}
 	}
-	if debugML {
-		log.Printf("[DEBUG_ML] ml_service HTTP %d, raw response (%d bytes): %s",
-			resp.StatusCode, len(respBody), truncate(string(respBody), 16000))
+	if debugML || logger.DebugEnabled() {
+		intelLog.Debug("[DEBUG_ML] ml_service response",
+			"http_status", resp.StatusCode, "resp_bytes", len(respBody),
+			"response", truncate(string(respBody), 16000))
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
@@ -258,14 +268,14 @@ func evalCondition(cond string, youReq map[string]any) bool {
 	// Only the `and`-joined presence grammar is supported; reject anything with
 	// `or`/`not `/comparisons we haven't verified.
 	if strings.Contains(c, " or ") || strings.Contains(c, "==") || strings.Contains(c, "!=") {
-		log.Printf("intelligence: unsupported feature condition %q — excluding", cond)
+		intelLog.Warn("unsupported feature condition — excluding", "condition", cond)
 		return false
 	}
 	clauses := strings.Split(c, " and ")
 	for _, clause := range clauses {
 		m := condFieldRe.FindStringSubmatch(strings.TrimSpace(clause))
 		if m == nil {
-			log.Printf("intelligence: unrecognized feature condition clause %q — excluding", clause)
+			intelLog.Warn("unrecognized feature condition clause — excluding", "clause", clause)
 			return false
 		}
 		if !requestFieldPresent(youReq, m[1]) {

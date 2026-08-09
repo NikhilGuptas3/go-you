@@ -17,10 +17,15 @@ import (
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/auth"
 	"github.com/sign3labs/go-you/internal/crawler"
+	"github.com/sign3labs/go-you/internal/logger"
 	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
 	"github.com/sign3labs/go-you/internal/staticdata"
 )
+
+// personaLog is the component logger for the persona transport layer, so lines
+// render as "persona:<func> - …" (the module:func column from hey-you's format).
+var personaLog = logger.Component("persona")
 
 const (
 	route = "/v1/persona"
@@ -78,34 +83,51 @@ func breachOn(yc *appconfig.YouConfiguration) bool { return yc == nil || yc.Brea
 
 func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
-	requestID := uuid.NewString()
+	// Reuse the request id the middleware stashed in context (which reconciles an
+	// inbound X-Request-Id with a freshly minted uuid); fall back to a new one if
+	// the handler is somehow reached without the middleware.
+	requestID := logger.RequestIDFromContext(r.Context())
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
 
 	tenant, ok := auth.FromContext(r.Context())
 	if !ok {
 		// Middleware guarantees this, but stay defensive.
+		personaLog.Warn("unauthorized", "rid", requestID)
 		writeError(w, http.StatusUnauthorized, requestID, "Unauthorized")
 		return
 	}
 	tenantID := tenant.ID
 
+	// Declared before the deferred logger so the closure can report id presence.
+	var req model.PersonaRequest
 	var status = http.StatusOK
 	defer func() {
-		metrics.APILatency.WithLabelValues(route, tenantID).Observe(time.Since(start).Seconds())
+		took := time.Since(start)
+		metrics.APILatency.WithLabelValues(route, tenantID).Observe(took.Seconds())
 		metrics.APIStatus.WithLabelValues(route, tenantID, strconv.Itoa(status)).Inc()
+		// One structured line per request — the handler has the richest facts
+		// (tenant, id presence, timing) that the access-log middleware lacks.
+		personaLog.Info("persona handled",
+			"rid", requestID, "tenant", tenantID, "status", status,
+			"took", roundTo(took.Seconds(), 3),
+			"phone", req.Phone != nil, "email", req.Email != "")
 	}()
 
 	tm := newTimings()
 
 	decodeStart := time.Now()
-	var req model.PersonaRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		status = http.StatusBadRequest
+		personaLog.Warn("bad request body", "rid", requestID, "tenant", tenantID, "err", err.Error())
 		writeError(w, status, requestID, "Invalid request body")
 		return
 	}
 	tm.since("decode", decodeStart)
 	if req.Phone == nil && req.Email == "" {
 		status = http.StatusBadRequest
+		personaLog.Warn("missing identifier", "rid", requestID, "tenant", tenantID, "reason", "phone or email required")
 		writeError(w, status, requestID, "phone or email required")
 		return
 	}
@@ -305,15 +327,33 @@ func domainAttrsToModel(m map[string]any) *model.DomainAttributes {
 	return da
 }
 
-// recordCrawlerTimings logs each crawler's measured duration under crawl_<SITE>
-// for the per-request timing view, and also feeds the per-crawler Prometheus
-// histogram so Grafana can show p50/p95/p99 latency per crawler over time.
-func recordCrawlerTimings(tm *timings, results []crawler.Result) {
+// recordCrawlerTimings records each crawler's measured duration under
+// crawl_<SITE> for the per-request timing view, and feeds the per-crawler
+// Prometheus metrics (website_latency / website_status / user_exist /
+// spider_error) so Grafana can show latency and success/error rates per crawler
+// over time. A failing crawler also gets one WARN log line, mirroring hey-you's
+// per-crawl logger.exception in crawler_service.py. rid correlates the log with
+// the request.
+func recordCrawlerTimings(ctx context.Context, tm *timings, results []crawler.Result) {
+	rid := logger.RequestIDFromContext(ctx)
 	for _, res := range results {
 		tm.record("crawl_"+res.Website, res.Duration)
-		metrics.CrawlerLatency.
-			WithLabelValues(res.Website, string(res.Kind), crawlerStatus(res)).
-			Observe(res.Duration.Seconds())
+		status := crawlerStatus(res)
+		kind := string(res.Kind)
+		metrics.WebsiteLatency.WithLabelValues(res.Website, kind, status).Observe(res.Duration.Seconds())
+		metrics.WebsiteStatus.WithLabelValues(res.Website, status, kind).Inc()
+
+		if res.Err != nil {
+			metrics.SpiderError.WithLabelValues(res.Website, metrics.ErrorClass(status, res.Err.Error())).Inc()
+			personaLog.Warn("crawl failed",
+				"website", res.Website, "type", kind, "status", status,
+				"rid", rid, "took_ms", res.Duration.Milliseconds(), "err", res.Err.Error())
+			continue
+		}
+		// Only count a user_exist verdict when the crawler actually returned one.
+		if res.UserExist != nil {
+			metrics.UserExist.WithLabelValues(res.Website, strconv.FormatBool(*res.UserExist)).Inc()
+		}
 	}
 }
 

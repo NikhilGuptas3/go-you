@@ -33,13 +33,13 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/sign3labs/go-you/internal/appconfig"
+	"github.com/sign3labs/go-you/internal/logger"
 	"github.com/sign3labs/go-you/internal/model"
 	"github.com/sign3labs/go-you/internal/personacache"
 )
@@ -52,9 +52,15 @@ const (
 	defaultTimeout = 10 * time.Second
 )
 
-// debugCommon, from DEBUG_COMMON=1, logs each enrich check's outcome. Off by
-// default.
-var debugCommon = os.Getenv("DEBUG_COMMON") == "1"
+// cdLog is this package's component logger ("commondata:<func> - …").
+var cdLog = logger.Component("commondata")
+
+// debugCommonEnv is the legacy DEBUG_COMMON=1 opt-in.
+var debugCommonEnv = os.Getenv("DEBUG_COMMON") == "1"
+
+// debugCommon reports whether an enrich-check diagnostic should be logged:
+// legacy DEBUG_COMMON=1 env, or LOG_LEVEL=debug.
+func debugCommon() bool { return debugCommonEnv || logger.DebugEnabled() }
 
 // checkOrder is the fixed set of checks, in the order Python submits them. Each
 // carries its tenant gate; the global ENRICH_DATA.enabled flag is ANDed in Fetch.
@@ -210,8 +216,8 @@ func (s *Service) Fetch(ctx context.Context, req *model.PersonaRequest, yc *appc
 	for _, check := range enabled {
 		if hitVal, ok := cached[check]; ok && hitVal != nil {
 			results[check] = hitVal
-			if debugCommon {
-				log.Printf("[DEBUG_COMMON] check=%s -> CACHE HIT (skip http)", check)
+			if debugCommon() {
+				cdLog.Debug("[DEBUG_COMMON] cache hit (skip http)", "check", check)
 			}
 			continue
 		}
@@ -219,8 +225,8 @@ func (s *Service) Fetch(ctx context.Context, req *model.PersonaRequest, yc *appc
 		if serviceID == "" {
 			// No id configured for this check: mirror Python's error result.
 			results[check] = map[string]any{"error": true}
-			if debugCommon {
-				log.Printf("[DEBUG_COMMON] check=%s -> no service_id configured", check)
+			if debugCommon() {
+				cdLog.Debug("[DEBUG_COMMON] no service_id configured", "check", check)
 			}
 			continue
 		}
@@ -304,8 +310,8 @@ func (s *Service) callCheck(ctx context.Context, cfg enrichConfig, serviceID, ch
 	// own Timeout is the ceiling; ctx cancellation still applies (leaf timeout).
 	resp, err := s.http.Do(req)
 	if err != nil {
-		if debugCommon {
-			log.Printf("[DEBUG_COMMON] check=%s -> http error: %v", check, err)
+		if debugCommon() {
+			cdLog.Debug("[DEBUG_COMMON] http error", "check", check, "err", err.Error())
 		}
 		return nil
 	}
@@ -315,20 +321,20 @@ func (s *Service) callCheck(ctx context.Context, cfg enrichConfig, serviceID, ch
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		if debugCommon {
-			log.Printf("[DEBUG_COMMON] check=%s -> HTTP %d (non-200, -> nil)", check, resp.StatusCode)
+		if debugCommon() {
+			cdLog.Debug("[DEBUG_COMMON] non-200 (-> nil)", "check", check, "http_status", resp.StatusCode)
 		}
 		return nil
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		if debugCommon {
-			log.Printf("[DEBUG_COMMON] check=%s -> HTTP 200 but unparseable JSON: %v", check, err)
+		if debugCommon() {
+			cdLog.Debug("[DEBUG_COMMON] 200 but unparseable JSON", "check", check, "err", err.Error())
 		}
 		return nil
 	}
-	if debugCommon {
-		log.Printf("[DEBUG_COMMON] check=%s -> HTTP 200 OK (%d keys)", check, len(parsed))
+	if debugCommon() {
+		cdLog.Debug("[DEBUG_COMMON] 200 OK", "check", check, "keys", len(parsed))
 	}
 	return parsed
 }

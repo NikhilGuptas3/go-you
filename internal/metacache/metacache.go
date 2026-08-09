@@ -19,20 +19,28 @@ import (
 	"crypto/md5"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/sign3labs/go-you/internal/awsclients"
+	"github.com/sign3labs/go-you/internal/logger"
 )
+
+// mcLog is this package's component logger ("metacache:<func> - …").
+var mcLog = logger.Component("metacache")
 
 // TTLSeconds is the phone/email meta expiry (Python ttl_in_seconds).
 const TTLSeconds int64 = 172800 // 2 days
 
-// debugCache, from DEBUG_CACHE=1, logs meta-cache reads/writes (shares the flag
-// with personacache). Off by default.
-var debugCache = os.Getenv("DEBUG_CACHE") == "1"
+// debugCacheEnv is the legacy DEBUG_CACHE=1 opt-in (shared with personacache).
+var debugCacheEnv = os.Getenv("DEBUG_CACHE") == "1"
+
+// debugCache reports whether cache diagnostics should be logged: either the
+// legacy DEBUG_CACHE=1 env is set, or the process log level is debug
+// (LOG_LEVEL=debug). This folds the old env-gate into the unified log level
+// while staying backward-compatible.
+func debugCache() bool { return debugCacheEnv || logger.DebugEnabled() }
 
 // dynamoGetPutter is the subset of *awsclients.DynamoClient this package needs.
 type dynamoGetPutter interface {
@@ -73,32 +81,32 @@ func (r *Repo) Get(ctx context.Context, id string, now int64) (doc json.RawMessa
 	key := md5hex(id)
 	item, err := r.client.GetItem(ctx, r.table, key)
 	if err != nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] meta GET table=%s id=%s key=%s ERROR: %v", r.table, id, key, err)
+		if debugCache() {
+			mcLog.Debug("[DEBUG_CACHE] meta GET ERROR", "table", r.table, "id", id, "key", key, "err", err.Error())
 		}
 		return nil, false, err
 	}
 	if item == nil {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] meta GET table=%s id=%s -> MISS (no item)", r.table, id)
+		if debugCache() {
+			mcLog.Debug("[DEBUG_CACHE] meta GET MISS (no item)", "table", r.table, "id", id)
 		}
 		return nil, false, nil
 	}
 	if ttl, ok := attrInt(item, "ttl"); ok && ttl > 0 && now >= ttl {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] meta GET table=%s id=%s -> MISS (expired ttl=%d now=%d)", r.table, id, ttl, now)
+		if debugCache() {
+			mcLog.Debug("[DEBUG_CACHE] meta GET MISS (expired)", "table", r.table, "id", id, "ttl", ttl, "now", now)
 		}
 		return nil, false, nil
 	}
 	s, ok := attrStr(item, "doc")
 	if !ok || s == "" {
-		if debugCache {
-			log.Printf("[DEBUG_CACHE] meta GET table=%s id=%s -> MISS (empty doc)", r.table, id)
+		if debugCache() {
+			mcLog.Debug("[DEBUG_CACHE] meta GET MISS (empty doc)", "table", r.table, "id", id)
 		}
 		return nil, false, nil
 	}
-	if debugCache {
-		log.Printf("[DEBUG_CACHE] meta GET table=%s id=%s -> HIT (%d bytes doc)", r.table, id, len(s))
+	if debugCache() {
+		mcLog.Debug("[DEBUG_CACHE] meta GET HIT", "table", r.table, "id", id, "bytes", len(s))
 	}
 	return json.RawMessage(s), true, nil
 }
@@ -120,11 +128,11 @@ func (r *Repo) Put(ctx context.Context, id string, doc any, now int64) error {
 		"ttl": &ddbtypes.AttributeValueMemberN{Value: strconv.FormatInt(now+TTLSeconds, 10)},
 	}
 	err = r.client.PutItem(ctx, r.table, item)
-	if debugCache {
+	if debugCache() {
 		if err != nil {
-			log.Printf("[DEBUG_CACHE] meta PUT table=%s id=%s key=%s ERROR: %v", r.table, id, key, err)
+			mcLog.Debug("[DEBUG_CACHE] meta PUT ERROR", "table", r.table, "id", id, "key", key, "err", err.Error())
 		} else {
-			log.Printf("[DEBUG_CACHE] meta PUT table=%s id=%s key=%s OK (%d bytes doc)", r.table, id, key, len(raw))
+			mcLog.Debug("[DEBUG_CACHE] meta PUT OK", "table", r.table, "id", id, "key", key, "bytes", len(raw))
 		}
 	}
 	return err
