@@ -107,6 +107,29 @@ func TestGenFailureDoesntAdd(t *testing.T) {
 	}
 }
 
+// refillOnce reports (attempted, succeeded) so the run loop can back off a
+// broken upstream. Pin that contract.
+func TestRefillReportsCounts(t *testing.T) {
+	// All fail => attempted>0, succeeded==0 (the back-off trigger).
+	failGen := func(_ context.Context) (map[string]string, error) { return nil, fmt.Errorf("403") }
+	p, _, _ := newTestPool(Config{Size: 4, TTL: time.Hour, UseLimit: 5, MaxThread: 4, Sleep: time.Hour}, failGen)
+	att, ok := p.refillOnce(context.Background())
+	if att != 4 || ok != 0 {
+		t.Fatalf("all-fail cycle: attempted=%d succeeded=%d want 4,0", att, ok)
+	}
+	// All succeed => attempted==succeeded.
+	p2, _, _ := newTestPool(Config{Size: 3, TTL: time.Hour, UseLimit: 5, MaxThread: 3, Sleep: time.Hour}, okGen)
+	att2, ok2 := p2.refillOnce(context.Background())
+	if att2 != 3 || ok2 != 3 {
+		t.Fatalf("all-ok cycle: attempted=%d succeeded=%d want 3,3", att2, ok2)
+	}
+	// Full pool => nothing attempted (no back-off).
+	att3, ok3 := p2.refillOnce(context.Background())
+	if att3 != 0 || ok3 != 0 {
+		t.Fatalf("full pool: attempted=%d succeeded=%d want 0,0", att3, ok3)
+	}
+}
+
 func TestShrinkTrimsOverflow(t *testing.T) {
 	p, _, _ := newTestPool(Config{Size: 2, TTL: time.Hour, UseLimit: 5, MaxThread: 5, Sleep: time.Hour}, okGen)
 	// Manually overfill, then shrink.

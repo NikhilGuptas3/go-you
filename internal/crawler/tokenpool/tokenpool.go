@@ -21,6 +21,7 @@ import (
 	"context"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sign3labs/go-you/internal/crawler"
@@ -164,13 +165,16 @@ func (p *Pool) shrink() {
 
 // refillOnce runs one cycle: filter → compute how many to mint → generate them
 // concurrently → add. Mirrors pool_creator's body (cap at 10 then at MaxThread).
-func (p *Pool) refillOnce(ctx context.Context) {
+// It returns (attempted, succeeded) so the run loop can back off a pool whose
+// upstream keeps rejecting (e.g. Microsoft 403 through a non-allowlisted proxy),
+// instead of hammering it every Sleep interval.
+func (p *Pool) refillOnce(ctx context.Context) (attempted, succeeded int) {
 	p.filter()
 
 	need := p.cfg.Size - p.size()
 	if need <= 0 {
 		p.shrink()
-		return
+		return 0, 0
 	}
 	if need > 10 {
 		need = 10 // pool_creator hard cap per cycle
@@ -181,6 +185,7 @@ func (p *Pool) refillOnce(ctx context.Context) {
 	poolLog.Info("tokens to generate", "count", need, "website", p.website, "kind", string(p.kind))
 
 	var wg sync.WaitGroup
+	var ok int64
 	for i := 0; i < need; i++ {
 		wg.Add(1)
 		go func() {
@@ -197,30 +202,60 @@ func (p *Pool) refillOnce(ctx context.Context) {
 				return
 			}
 			p.add(values)
+			atomic.AddInt64(&ok, 1)
 			poolLog.Debug("token generated", "website", p.website, "kind", string(p.kind))
 		}()
 	}
 	wg.Wait()
+	return need, int(ok)
 }
 
-// run is the per-pool background loop until ctx is cancelled.
+// maxBackoff caps how long a persistently-failing pool waits between cycles, so
+// an upstream that always rejects (e.g. Microsoft 403 through a proxy it doesn't
+// allowlist, or Quora's Safari-TLS gate) does not become a hot retry loop
+// hammering the endpoint every Sleep interval.
+const maxBackoff = 5 * time.Minute
+
+// run is the per-pool background loop until ctx is cancelled. It sleeps for the
+// configured interval on a healthy cycle, but backs off EXPONENTIALLY when a
+// cycle needed tokens yet minted none (all gens failed) — doubling the wait up
+// to maxBackoff. Any success (or a full pool that needs nothing) resets the wait
+// to the normal Sleep. This keeps a broken pool from spamming its upstream while
+// leaving healthy pools at their normal cadence.
 func (p *Pool) run(ctx context.Context) {
 	poolLog.Info("pool started", "website", p.website, "kind", string(p.kind),
 		"size", p.cfg.Size, "ttl_s", int(p.cfg.TTL.Seconds()), "use_limit", p.cfg.UseLimit)
+	wait := p.cfg.Sleep
 	for {
+		var attempted, succeeded int
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					poolLog.Error("pool cycle panic recovered", "website", p.website, "panic", toStr(r))
 				}
 			}()
-			p.refillOnce(ctx)
+			attempted, succeeded = p.refillOnce(ctx)
 		}()
+
+		switch {
+		case attempted > 0 && succeeded == 0:
+			// Every generation failed this cycle — back off (double, capped).
+			wait *= 2
+			if wait > maxBackoff {
+				wait = maxBackoff
+			}
+			poolLog.Warn("pool backing off (all token gens failed)",
+				"website", p.website, "kind", string(p.kind), "next_retry_s", int(wait.Seconds()))
+		default:
+			// Success, partial success, or nothing needed — resume normal cadence.
+			wait = p.cfg.Sleep
+		}
+
 		select {
 		case <-ctx.Done():
 			poolLog.Info("pool stopped", "website", p.website, "kind", string(p.kind))
 			return
-		case <-time.After(p.cfg.Sleep):
+		case <-time.After(wait):
 		}
 	}
 }
