@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// (Apple lives at the bottom of this file — same two-step inline shape as
+// Microsoft/Twitter.)
+
 // Tier-2 two-step crawlers ported from hey-you origin/aws-migration (audited
 // 2026-08-10). Each fetches a token/cookie inline (step 1), then does the check
 // (step 2) — the same stateless two-step shape as the Phase B crawlers (no
@@ -220,4 +223,110 @@ func (c *TwitterPhone) Check(ctx context.Context, identifier string, proxyURL *u
 		}
 	}
 	return false, fmt.Errorf("twitter: no condition matched (status=%d)", st2)
+}
+
+// --- APPLE (email) ---
+// crawler/spiders/softwares/apple/apple.py + apple_email.py. Two-step inline
+// (the background token pool is a latency optimization we skip, same as the
+// other Tier-2 crawlers). Plain TLS — Python uses the default requests client,
+// NOT curl_cffi.
+//
+// step 1: GET https://account.apple.com/account → from the response read the
+// `aidsp` cookie (Set-Cookie) and the `scnt` header. Build the cookie string
+// exactly as parse_cookie does; session_id = aidsp.
+// step 2: POST https://appleid.apple.com/account/validation/appleid with body
+// {"emailAddress": <email>} and headers X-Apple-ID-Session-Id=aidsp, scnt,
+// Cookie, plus the hardcoded X-Apple-I-FD-Client-Info device blob (carried
+// verbatim from Python — Apple's anti-bot fingerprint; a rot risk, not a bug).
+//
+// Verdict: 403 => captcha (error, not a false verdict); 200 + used==true =>
+// exist; used==false OR appleOwnedDomain==true => not-exist; else NoConditionMatched.
+type AppleEmail struct{ timeout time.Duration }
+
+func NewAppleEmail(timeout time.Duration) *AppleEmail { return &AppleEmail{timeout: timeout} }
+func (c *AppleEmail) Website() string                 { return "APPLE" }
+func (c *AppleEmail) Kind() Kind                      { return KindEmail }
+
+const (
+	appleAccountURL    = "https://account.apple.com/account"
+	appleValidationURL = "https://appleid.apple.com/account/validation/appleid"
+	// appleFDClientInfo is the X-Apple-I-FD-Client-Info device-fingerprint blob,
+	// carried verbatim from apple.py's login headers.
+	appleFDClientInfo = `{"U":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","L":"en-IN","Z":"GMT+05:30","V":"1.1","F":"7ta44j1e3NlY5BNlY5BSmHACVZXnNA9ZdcFHmWumeiQBpsOIcF69LarTcfx9MsFY5CCw1JgN3dN9ZsdI_Fe2iwjOyZ2wcGY5BNlYJNNlY5QB4bVNjMk.7HR"}`
+	appleUA           = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+var appleAidspRe = regexp.MustCompile(`aidsp=(.*?);`)
+
+func (c *AppleEmail) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
+	client := newHTTPClientJar(proxyURL, c.timeout, TLSDefault) // Python: default requests, no impersonation
+
+	// step 1: bootstrap → aidsp cookie + scnt header.
+	st1, _, hdr1, err := doRequestFull(ctx, client, "GET", appleAccountURL, nil, map[string]string{
+		"Accept":          "application/json, text/plain, */*",
+		"Accept-Language": "en-IN,en;q=0.9", "Content-Type": "application/json",
+		"Cookie": "dslang=IN-EN; site=IND; geo=IN", "Host": "appleid.apple.com",
+		"Origin": "https://account.apple.com", "Referer": "https://account.apple.com/",
+		"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-site",
+		"User-Agent": appleUA, "X-Apple-I-FD-Client-Info": appleFDClientInfo,
+		"X-Apple-I-Request-Context": "ca", "X-Apple-I-TimeZone": "Asia/Calcutta",
+		"sec-ch-ua-mobile": "?0",
+	})
+	if err != nil {
+		return false, fmt.Errorf("apple cookie: %w", err)
+	}
+	if st1 == 403 {
+		return false, fmt.Errorf("apple: captcha (cookie step 403)")
+	}
+	// aidsp comes from Set-Cookie; scnt from a response header.
+	setCookie := strings.Join(hdr1.Values("Set-Cookie"), "; ")
+	m := appleAidspRe.FindStringSubmatch(setCookie)
+	if len(m) != 2 || m[1] == "" {
+		return false, fmt.Errorf("apple: aidsp cookie not found")
+	}
+	aidsp := m[1]
+	scnt := hdr1.Get("scnt")
+	if scnt == "" {
+		return false, fmt.Errorf("apple: scnt header not found")
+	}
+	// parse_cookie builds this exact string.
+	cookie := "dslang=IN-EN; site=IND; geo=IN; idclient=web; aidsp=" + aidsp
+
+	// step 2: existence check.
+	payload, _ := json.Marshal(map[string]any{"emailAddress": identifier})
+	st2, body2, _, err := doRequestFull(ctx, client, "POST", appleValidationURL, strings.NewReader(string(payload)), map[string]string{
+		"Accept": "application/json, text/plain, */*", "Accept-Language": "en-IN,en;q=0.9",
+		"Content-Type": "application/json", "Cookie": cookie, "Host": "appleid.apple.com",
+		"Origin": "https://appleid.apple.com", "Referer": "https://appleid.apple.com/",
+		"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin",
+		"User-Agent": appleUA, "X-Apple-I-FD-Client-Info": appleFDClientInfo,
+		"X-Apple-I-TimeZone": "Asia/Calcutta", "X-Apple-ID-Session-Id": aidsp,
+		"X-Apple-Request-Context": "create", "scnt": scnt, "sec-ch-ua-mobile": "?0",
+	})
+	if err != nil {
+		return false, err
+	}
+	if st2 == 403 {
+		return false, fmt.Errorf("apple: captcha (validation 403)")
+	}
+	if st2 != 200 {
+		return false, fmt.Errorf("apple: no condition matched (status=%d)", st2)
+	}
+	var parsed struct {
+		Used             *bool `json:"used"`
+		AppleOwnedDomain *bool `json:"appleOwnedDomain"`
+	}
+	if err := json.Unmarshal(body2, &parsed); err != nil {
+		return false, fmt.Errorf("apple decode: %w", err)
+	}
+	switch {
+	case parsed.Used != nil && *parsed.Used:
+		return true, nil
+	case parsed.Used != nil && !*parsed.Used:
+		return false, nil
+	case parsed.AppleOwnedDomain != nil && *parsed.AppleOwnedDomain:
+		return false, nil
+	default:
+		return false, fmt.Errorf("apple: no condition matched")
+	}
 }

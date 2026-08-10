@@ -37,6 +37,7 @@ func TestFlowAuditCrawlerContract(t *testing.T) {
 		{NewMicrosoftPhone(time.Second), "MICROSOFT", KindPhone},
 		{NewMicrosoftEmail(time.Second), "MICROSOFT", KindEmail},
 		{NewTwitterPhone(time.Second), "TWITTER", KindPhone},
+		{NewAppleEmail(time.Second), "APPLE", KindEmail},
 	}
 	for _, tc := range cases {
 		if got := tc.c.Website(); got != tc.site {
@@ -80,5 +81,11 @@ func TestTier2Regexes(t *testing.T) {
 	twHTML := []byte(`<input type="hidden" name="authenticity_token" value="tok_abc123XYZ">`)
 	if m := twitterAuthTokenRe.FindSubmatch(twHTML); len(m) != 2 || string(m[1]) != "tok_abc123XYZ" {
 		t.Errorf("twitter auth token regex failed: %v", m)
+	}
+
+	// Apple aidsp is scraped from the Set-Cookie header.
+	setCookie := "geo=IN; Path=/; Secure, aidsp=ABC.def-123; Path=/; HttpOnly; Secure"
+	if m := appleAidspRe.FindStringSubmatch(setCookie); len(m) != 2 || m[1] != "ABC.def-123" {
+		t.Errorf("apple aidsp regex failed: %v", m)
 	}
 }

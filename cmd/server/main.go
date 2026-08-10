@@ -197,6 +197,7 @@ func main() {
 		crawler.NewMicrosoftPhone(cfg.HTTPTimeout), // phone (authorize->GetCredentialType)
 		crawler.NewMicrosoftEmail(cfg.HTTPTimeout), // email
 		crawler.NewTwitterPhone(cfg.HTTPTimeout),   // phone (begin_password_reset, uTLS)
+		crawler.NewAppleEmail(cfg.HTTPTimeout),     // email (account.apple.com -> validation/appleid)
 	}
 
 	// UPI (phone) — needs config (upi_config + cashfree creds), so only when the

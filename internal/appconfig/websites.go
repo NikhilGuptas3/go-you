@@ -15,20 +15,19 @@ var DisabledWebsitesDefault = []string{
 // always-erroring crawler.
 //
 // Sites are removed from this set as they get ported: EVENTBRITE, SNAPDEAL, ZOHO
-// (Phase B two-step) and — as of the 2026-08-10 flow audit — NETFLIX and
-// MICROSOFT (both flows) are now STATELESS crawlers that fetch any token inline,
-// so they DO run when a tenant enables them and must NOT be skipped here.
+// (Phase B two-step) and — as of the 2026-08-10 flow audit — NETFLIX, MICROSOFT,
+// and APPLE are now STATELESS two-step crawlers that fetch any token inline, so
+// they DO run when a tenant enables them and must NOT be skipped here.
 //
 // What remains is genuinely unported / infeasible stateless: SWIGGY (external
-// vendor TokenService + AWS-WAF), APPLE (token pool + 403 captcha), LINKEDIN
-// (external MS-Loki bearer + paid reversecontact.com), DIGILOCKER (AES-GCM +
-// pool — not yet ported), and the misc token sites (EVERNOTE/ZERODHA/BPCL_GAS/
-// PAYU_UPI/SAMSUNG/EASYGOSMS).
+// vendor TokenService + AWS-WAF), LINKEDIN (external MS-Loki bearer + paid
+// reversecontact.com), DIGILOCKER (AES-GCM + pool — not yet ported), and the
+// misc token sites (EVERNOTE/ZERODHA/BPCL_GAS/PAYU_UPI/SAMSUNG/EASYGOSMS).
 //
 // TWITTER is NOT listed: the EMAIL flow is token-free (email_available.json) and
 // the PHONE flow is now a stateless two-step crawler (TwitterPhone). Both run.
 var TokenPoolSites = map[string]struct{}{
-	"APPLE": {}, "EVERNOTE": {}, "DIGILOCKER": {},
+	"EVERNOTE": {}, "DIGILOCKER": {},
 	"ZERODHA": {}, "BPCL_GAS": {}, "PAYU_UPI": {}, "SWIGGY": {},
 	"LINKEDIN": {}, "SAMSUNG": {}, "EASYGOSMS": {},
 }
