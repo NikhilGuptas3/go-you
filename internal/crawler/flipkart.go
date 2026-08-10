@@ -17,14 +17,27 @@ import (
 // status endpoint, then read RESPONSE.userDetails[id]. A code in the "exists"
 // set => user_exist true; a code in the "not exists" set => false; anything else
 // is NoConditionMatched (an error, not a false).
+// The phone and email flows are the SAME request (loginId=[id], read
+// userDetails[id]) — Python has flipkart.py (phone) + flipkart_email.py that
+// only differ in which login flow selects them. go-you registers both a phone
+// and an email crawler over one shared check.
 type Flipkart struct {
 	timeout time.Duration
+	kind    Kind
 }
 
-func NewFlipkart(timeout time.Duration) *Flipkart { return &Flipkart{timeout: timeout} }
+func NewFlipkart(timeout time.Duration) *Flipkart {
+	return &Flipkart{timeout: timeout, kind: KindPhone}
+}
+
+// NewFlipkartEmail registers FLIPKART on the email flow (same endpoint, the
+// email address is the loginId).
+func NewFlipkartEmail(timeout time.Duration) *Flipkart {
+	return &Flipkart{timeout: timeout, kind: KindEmail}
+}
 
 func (f *Flipkart) Website() string { return "FLIPKART" }
-func (f *Flipkart) Kind() Kind      { return KindPhone }
+func (f *Flipkart) Kind() Kind      { return f.kind }
 
 const flipkartURL = "https://2.rome.api.flipkart.com/api/6/user/signup/status"
 
@@ -56,7 +69,10 @@ func (f *Flipkart) Check(ctx context.Context, identifier string, proxyURL *url.U
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("X-User-Agent", ua+" FKUA/website/42/website/Desktop")
 
-	client := newHTTPClient(proxyURL, f.timeout)
+	// Chrome TLS impersonation: the Python spider migrated httpx -> curl_cffi
+	// (impersonate=chrome) on 2026-01-14. Stock Go TLS presents a different
+	// fingerprint and Flipkart gates on it, so use uTLS Chrome to match.
+	client := newHTTPClientTLS(proxyURL, f.timeout, TLSChrome)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err

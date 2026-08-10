@@ -107,6 +107,28 @@ func (c *ToiPhone) Check(ctx context.Context, id string, p *url.URL) (bool, erro
 	return jssoCheck(ctx, internationalNumber(id), p, c.timeout, headers, "VERIFIED_MOBILE", "UNREGISTERED_MOBILE", "UNVERIFIED_MOBILE")
 }
 
+// --- TOI (email) --- toi_email.py: data.status VERIFIED_EMAIL => exist;
+// UNVERIFIED_EMAIL AND UNREGISTERED_EMAIL => not-exist. Same headers as phone.
+
+type ToiEmail struct{ timeout time.Duration }
+
+func NewToiEmail(timeout time.Duration) *ToiEmail { return &ToiEmail{timeout: timeout} }
+func (c *ToiEmail) Website() string               { return "TOI" }
+func (c *ToiEmail) Kind() Kind                    { return KindEmail }
+func (c *ToiEmail) Check(ctx context.Context, id string, p *url.URL) (bool, error) {
+	headers := map[string]string{
+		"authority": "jsso.indiatimes.com", "accept": "*/*", "accept-language": "en-GB,en;q=0.9",
+		"channel": "toi", "content-type": "application/json", "csrftoken": "", "csut": "",
+		"gdpr": "", "isjssocrosswalk": "true", "origin": "https://timesofindia.indiatimes.com",
+		"platform": "web", "referer": "https://timesofindia.indiatimes.com/", "sdkversion": "0.6.22",
+		"sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "same-site",
+		"ssec": "", "tksec": "", "user-agent": randomUA(),
+	}
+	// TOI email treats UNVERIFIED_EMAIL as not-exist (extraNotExist), unlike
+	// TIMES_PRIME which raises NoConditionMatched for it.
+	return jssoCheck(ctx, id, p, c.timeout, headers, "VERIFIED_EMAIL", "UNREGISTERED_EMAIL", "UNVERIFIED_EMAIL")
+}
+
 // --- TIMES_PRIME (phone) --- national id.
 
 type TimesPrimePhone struct{ timeout time.Duration }
@@ -117,7 +139,26 @@ func NewTimesPrimePhone(timeout time.Duration) *TimesPrimePhone {
 func (c *TimesPrimePhone) Website() string { return "TIMES_PRIME" }
 func (c *TimesPrimePhone) Kind() Kind      { return KindPhone }
 func (c *TimesPrimePhone) Check(ctx context.Context, id string, p *url.URL) (bool, error) {
-	headers := map[string]string{
+	return jssoCheck(ctx, nationalNumber(id), p, c.timeout, timesPrimeHeaders(), "VERIFIED_MOBILE", "UNREGISTERED_MOBILE", "")
+}
+
+// --- TIMES_PRIME (email) --- times_primes_email.py: ONLY VERIFIED_EMAIL =>
+// exist and UNREGISTERED_EMAIL => not-exist; UNVERIFIED_EMAIL falls through to
+// NoConditionMatched (deliberately NOT passed as extraNotExist — differs from TOI).
+
+type TimesPrimeEmail struct{ timeout time.Duration }
+
+func NewTimesPrimeEmail(timeout time.Duration) *TimesPrimeEmail {
+	return &TimesPrimeEmail{timeout: timeout}
+}
+func (c *TimesPrimeEmail) Website() string { return "TIMES_PRIME" }
+func (c *TimesPrimeEmail) Kind() Kind      { return KindEmail }
+func (c *TimesPrimeEmail) Check(ctx context.Context, id string, p *url.URL) (bool, error) {
+	return jssoCheck(ctx, id, p, c.timeout, timesPrimeHeaders(), "VERIFIED_EMAIL", "UNREGISTERED_EMAIL", "")
+}
+
+func timesPrimeHeaders() map[string]string {
+	return map[string]string{
 		"authority": "jsso.indiatimes.com", "accept": "*/*",
 		"accept-language": "en-IN,en-GB;q=0.9,en-US;q=0.8,en;q=0.7", "captchatoken": "",
 		"channel": "timesprime", "content-type": "application/json", "csrftoken": "", "csut": "",
@@ -126,5 +167,4 @@ func (c *TimesPrimePhone) Check(ctx context.Context, id string, p *url.URL) (boo
 		"sec-fetch-dest": "empty", "sec-fetch-mode": "cors", "sec-fetch-site": "cross-site",
 		"ssec": "", "tksec": "", "user-agent": randomUA(),
 	}
-	return jssoCheck(ctx, nationalNumber(id), p, c.timeout, headers, "VERIFIED_MOBILE", "UNREGISTERED_MOBILE", "")
 }

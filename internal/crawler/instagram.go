@@ -18,19 +18,28 @@ import (
 // 400) => the user exists (right username, wrong password); a 200 with no
 // error_type => user does not exist; 429 or anything else => NoConditionMatched.
 //
-// IMPORTANT: the Python spider uses curl_cffi (Chrome TLS impersonation). Go's
-// net/http presents a Go TLS fingerprint and Instagram is the crawler most
-// likely to block or 429 as a result. If this crawler fails in the POC where
-// Flipkart succeeds, that isolates the TLS-fingerprint gap — swap newHTTPClient
-// for a utls-based client here.
+// The Python spider migrated to curl_cffi (Chrome TLS impersonation) on
+// 2026-01-15, so this uses uTLS Chrome (newHTTPClientTLS) — stock Go TLS
+// presents a Go fingerprint that Instagram 429s / no-condition-matches.
+// Phone and email are the SAME request (the target goes in the `username`
+// form field either way) — Python has instagram.py + instagram_email.py.
 type Instagram struct {
 	timeout time.Duration
+	kind    Kind
 }
 
-func NewInstagram(timeout time.Duration) *Instagram { return &Instagram{timeout: timeout} }
+func NewInstagram(timeout time.Duration) *Instagram {
+	return &Instagram{timeout: timeout, kind: KindPhone}
+}
+
+// NewInstagramEmail registers INSTAGRAM on the email flow (email goes in the
+// same `username` field).
+func NewInstagramEmail(timeout time.Duration) *Instagram {
+	return &Instagram{timeout: timeout, kind: KindEmail}
+}
 
 func (i *Instagram) Website() string { return "INSTAGRAM" }
-func (i *Instagram) Kind() Kind      { return KindPhone }
+func (i *Instagram) Kind() Kind      { return i.kind }
 
 const instagramLoginURL = "https://www.instagram.com/api/v1/web/accounts/login/ajax/"
 
@@ -69,7 +78,7 @@ func (i *Instagram) Check(ctx context.Context, identifier string, proxyURL *url.
 		req.Header.Set(k, v)
 	}
 
-	client := newHTTPClient(proxyURL, i.timeout)
+	client := newHTTPClientTLS(proxyURL, i.timeout, TLSChrome)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false, err

@@ -14,20 +14,23 @@ var DisabledWebsitesDefault = []string{
 // tenant config, so a tenant that enables an unported token site does not get an
 // always-erroring crawler.
 //
-// NOTE: EVENTBRITE, SNAPDEAL, and ZOHO were originally listed here (token-pool in
-// Python) but are now ported as STATELESS two-step crawlers (Phase B) that fetch
-// their token inline — they no longer need the pool, so they are DELIBERATELY NOT
-// in this set and DO run when a tenant enables them. Only genuinely-unported
-// token sites remain (SWIGGY needs an external vendor service; APPLE/NETFLIX/
-// LINKEDIN/MICROSOFT/SAMSUNG/DIGILOCKER/etc. are hard-tier, not ported).
+// Sites are removed from this set as they get ported: EVENTBRITE, SNAPDEAL, ZOHO
+// (Phase B two-step) and — as of the 2026-08-10 flow audit — NETFLIX and
+// MICROSOFT (both flows) are now STATELESS crawlers that fetch any token inline,
+// so they DO run when a tenant enables them and must NOT be skipped here.
+//
+// What remains is genuinely unported / infeasible stateless: SWIGGY (external
+// vendor TokenService + AWS-WAF), APPLE (token pool + 403 captcha), LINKEDIN
+// (external MS-Loki bearer + paid reversecontact.com), DIGILOCKER (AES-GCM +
+// pool — not yet ported), and the misc token sites (EVERNOTE/ZERODHA/BPCL_GAS/
+// PAYU_UPI/SAMSUNG/EASYGOSMS).
+//
+// TWITTER is NOT listed: the EMAIL flow is token-free (email_available.json) and
+// the PHONE flow is now a stateless two-step crawler (TwitterPhone). Both run.
 var TokenPoolSites = map[string]struct{}{
 	"APPLE": {}, "EVERNOTE": {}, "DIGILOCKER": {},
 	"ZERODHA": {}, "BPCL_GAS": {}, "PAYU_UPI": {}, "SWIGGY": {},
-	"NETFLIX": {}, "LINKEDIN": {}, "MICROSOFT": {},
-	"SAMSUNG": {}, "EASYGOSMS": {},
-	// NOTE: TWITTER is token-pool for the PHONE flow but token-free for EMAIL
-	// (email_available.json). It is therefore NOT listed here; the email crawler
-	// registers TWITTER and the phone flow simply has no TWITTER crawler.
+	"LINKEDIN": {}, "SAMSUNG": {}, "EASYGOSMS": {},
 }
 
 // CrawlSet returns the websites to crawl for kind ("phone"/"email") for a

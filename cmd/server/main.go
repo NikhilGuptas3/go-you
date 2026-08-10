@@ -176,6 +176,27 @@ func main() {
 		crawler.NewTumblr(cfg.HTTPTimeout),     // email (regex API_TOKEN)
 		crawler.NewQuora(cfg.HTTPTimeout),      // email (HTML scan; uTLS, Safari->Chrome)
 		crawler.NewCodecademy(cfg.HTTPTimeout), // email (two GETs, <meta> csrf)
+
+		// --- 2026-08-10 flow audit: missing EMAIL variants of sites go-you had
+		// registered PHONE-only (hey-you runs both flows via *_email.py wrappers).
+		crawler.NewFlipkartEmail(cfg.HTTPTimeout),   // email (same endpoint as phone)
+		crawler.NewInstagramEmail(cfg.HTTPTimeout),  // email (target in username field)
+		crawler.NewIrctcEmail(cfg.HTTPTimeout),      // email (?email=, emailAvailable)
+		crawler.NewHousingEmail(cfg.HTTPTimeout),    // email (GraphQL variables.email)
+		crawler.NewToiEmail(cfg.HTTPTimeout),        // email (jsso VERIFIED_EMAIL)
+		crawler.NewTimesPrimeEmail(cfg.HTTPTimeout), // email (jsso, stricter mapping)
+
+		// --- Tier 1: new stateless single-request crawlers (flow audit).
+		crawler.NewShaadiPhone(cfg.HTTPTimeout),   // phone (body-text verdict)
+		crawler.NewGoogleEmail(cfg.HTTPTimeout),   // email (gxlu 204+Set-Cookie)
+		crawler.NewNetflixEmail(cfg.HTTPTimeout),  // email (GraphQL location)
+		crawler.NewFacebookPhone(cfg.HTTPTimeout), // phone (GraphQL doc_id)
+		crawler.NewFacebookEmail(cfg.HTTPTimeout), // email (GraphQL doc_id)
+
+		// --- Tier 2: two-step inline (fetch token, then check).
+		crawler.NewMicrosoftPhone(cfg.HTTPTimeout), // phone (authorize->GetCredentialType)
+		crawler.NewMicrosoftEmail(cfg.HTTPTimeout), // email
+		crawler.NewTwitterPhone(cfg.HTTPTimeout),   // phone (begin_password_reset, uTLS)
 	}
 
 	// UPI (phone) — needs config (upi_config + cashfree creds), so only when the
