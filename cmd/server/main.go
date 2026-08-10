@@ -207,6 +207,18 @@ func main() {
 		crawlers = append(crawlers, buildUPICrawler(appCfg, cfg))
 	}
 
+	// WHATSAPP (phone) — the wappsure_api_v2 source: a third-party vendor call
+	// (wa-validator.xyz) whose bearer key lives in tpi_global_config.wappsure.
+	// Needs the ConfigFetcher for the key, so only when appCfg is available.
+	if appCfg != nil {
+		if bearer := wappsureBearer(appCfg); bearer != "" {
+			crawlers = append(crawlers, crawler.NewWhatsappWappsure(cfg.HTTPTimeout, bearer))
+			mainLog.Info("whatsapp (wappsure v2) enabled")
+		} else {
+			mainLog.Warn("whatsapp (wappsure v2) disabled: tpi_global_config.wappsure.api_key missing")
+		}
+	}
+
 	runner := crawler.NewRunner(proxyURL, crawlers...)
 
 	// --- Meta (phone_meta: Freecharge operator/circle + Airtel/Jio/VI postpaid
@@ -380,6 +392,24 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// wappsureBearer resolves the WhatsApp wappsure vendor API key from
+// tpi_global_config.wappsure.api_key (the same config key the Python spider
+// reads), falling back to the tpi_config_default value when the config row
+// omits it — so it works out of the box like Python does. Returns "" only if
+// the resolved value is empty.
+func wappsureBearer(appCfg *appconfig.Fetcher) string {
+	const defaultKey = "Bearer 018f93b0-fe9c-7753-a8bb-b6b36a512162" // tpi_config_default.wappsure.api_key
+	tpi, _ := appCfg.Get("tpi_global_config", nil).(map[string]any)
+	if tpi != nil {
+		if w, ok := tpi["wappsure"].(map[string]any); ok {
+			if k, _ := w["api_key"].(string); k != "" {
+				return k
+			}
+		}
+	}
+	return defaultKey
 }
 
 // buildUPICrawler assembles the UPI phone crawler's dependencies from the
