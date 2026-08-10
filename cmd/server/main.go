@@ -107,6 +107,18 @@ func main() {
 		mainLog.Info("crawling direct (no proxy configured)")
 	}
 
+	// Optional second egress for the NIMBLE-vendor sites (MICROSOFT/APPLE), whose
+	// login endpoints 403 the default BrightData proxy. Empty => those sites use
+	// the default proxy like everyone else.
+	var nimbleURL *url.URL
+	if cfg.NimbleProxyURL != "" {
+		nimbleURL, err = url.Parse(cfg.NimbleProxyURL)
+		if err != nil {
+			logger.Fatal("invalid NIMBLE_PROXY_URL", "err", err.Error())
+		}
+		mainLog.Info("nimble proxy configured for MICROSOFT/APPLE", "host", nimbleURL.Host)
+	}
+
 	// --- Crawlers (token-free only) ---
 	// The registered set is go-you's "factory"; per request the handler runs
 	// only the subset the tenant enables (appconfig.CrawlSet).
@@ -191,7 +203,7 @@ func main() {
 	// inline (get_or_generate_token fallback), so behavior is identical whether
 	// the pool is warm or not. Gated by enable_token_pool (default ON; the config
 	// key can force OFF without a redeploy).
-	tokenPoolMgr := tokenpool.NewManager(proxyURL)
+	tokenPoolMgr := tokenpool.NewManager(proxyURL).WithNimbleProxy(nimbleURL)
 	// Each two-step crawler is constructed with WithTokenSource(tokenPoolMgr) so
 	// its Check consults the pool first; the loop below registers each with the
 	// manager (for background refill) and adds it to the crawl set.
@@ -246,7 +258,7 @@ func main() {
 		}
 	}
 
-	runner := crawler.NewRunner(proxyURL, crawlers...)
+	runner := crawler.NewRunner(proxyURL, crawlers...).WithNimbleProxy(nimbleURL)
 
 	// --- Meta (phone_meta: Freecharge operator/circle + Airtel/Jio/VI postpaid
 	// + Outris revocations; email_meta: domain intelligence V2). Both read

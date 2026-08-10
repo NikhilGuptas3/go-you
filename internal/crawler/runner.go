@@ -24,10 +24,13 @@ var errNoConditionMatched = errors.New("no condition matched")
 // hey-you-timeout-model note).
 //
 // The POC uses a single static proxy (or none) rather than the Python Redis
-// rotating pool. proxyURL may be nil => crawl direct.
+// rotating pool. proxyURL may be nil => crawl direct. nimbleURL is an optional
+// second egress for NimbleSites (MICROSOFT/APPLE); nil => those sites use
+// proxyURL like everyone else.
 type Runner struct {
-	proxyURL *url.URL
-	crawlers []Crawler
+	proxyURL  *url.URL
+	nimbleURL *url.URL
+	crawlers  []Crawler
 	// byKind indexes registered crawlers by kind then website, so a config-driven
 	// request can select exactly the sites the tenant enabled.
 	byKind map[Kind]map[string]Crawler
@@ -44,6 +47,20 @@ func NewRunner(proxyURL *url.URL, crawlers ...Crawler) *Runner {
 		m[c.Website()] = c
 	}
 	return r
+}
+
+// WithNimbleProxy sets the second egress used for NimbleSites (the faithful port
+// of hey-you's per-site vendor_choices=["NIMBLE"]). Returns the runner for
+// chaining. nil leaves every site on the default proxy.
+func (r *Runner) WithNimbleProxy(nimbleURL *url.URL) *Runner {
+	r.nimbleURL = nimbleURL
+	return r
+}
+
+// proxyFor picks the egress for a website: Nimble for NimbleSites (when set),
+// else the default.
+func (r *Runner) proxyFor(website string) *url.URL {
+	return ProxyFor(website, r.proxyURL, r.nimbleURL)
 }
 
 // Lookup returns the registered crawler for (kind, website), or nil. Used by the
@@ -107,20 +124,21 @@ func (r *Runner) run(ctx context.Context, crawlers []Crawler, identifier string)
 
 			started := time.Now()
 			res := Result{Website: c.Website(), Kind: c.Kind()}
+			proxy := r.proxyFor(c.Website())
 
 			// Prefer the rich path when the crawler is a DetailCrawler.
 			var err error
 			if dc, ok := c.(DetailCrawler); ok {
 				var exist *bool
 				var data map[string]any
-				exist, data, err = dc.CheckDetail(ctx, identifier, r.proxyURL)
+				exist, data, err = dc.CheckDetail(ctx, identifier, proxy)
 				if err == nil {
 					res.UserExist = exist
 					res.Data = data
 				}
 			} else {
 				var exist bool
-				exist, err = c.Check(ctx, identifier, r.proxyURL)
+				exist, err = c.Check(ctx, identifier, proxy)
 				if err == nil {
 					res.UserExist = &exist
 				}

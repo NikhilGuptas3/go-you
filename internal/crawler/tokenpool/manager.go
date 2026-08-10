@@ -42,17 +42,29 @@ type key struct {
 // request-time token lookups. Nil-safe: a nil *Manager's GetToken always misses
 // (so crawlers fall back to inline generation) and Start/Stop are no-ops.
 type Manager struct {
-	proxyURL *url.URL
-	pools    map[key]*Pool
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
-	started  bool
+	proxyURL  *url.URL
+	nimbleURL *url.URL
+	pools     map[key]*Pool
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	started   bool
 }
 
 // NewManager builds an empty manager bound to the crawl proxy (pools mint tokens
 // through the same proxy the crawlers use).
 func NewManager(proxyURL *url.URL) *Manager {
 	return &Manager{proxyURL: proxyURL, pools: map[key]*Pool{}}
+}
+
+// WithNimbleProxy sets the second egress used when refilling NimbleSites'
+// pools (MICROSOFT/APPLE), so their background token generation uses the same
+// Nimble vendor hey-you pins them to. nil leaves every pool on the default
+// proxy. Returns the manager for chaining. Call before Register.
+func (m *Manager) WithNimbleProxy(nimbleURL *url.URL) *Manager {
+	if m != nil {
+		m.nimbleURL = nimbleURL
+	}
+	return m
 }
 
 // Register adds a pool for tc using its DefaultConfigs entry (or a zero Config
@@ -67,7 +79,9 @@ func (m *Manager) Register(tc crawler.TokenCrawler) {
 		return
 	}
 	cfg := DefaultConfigs[tc.Website()]
-	proxy := m.proxyURL
+	// Refill through the site's egress: Nimble for NimbleSites, else the default —
+	// so MICROSOFT/APPLE token generation uses the vendor their endpoints require.
+	proxy := crawler.ProxyFor(tc.Website(), m.proxyURL, m.nimbleURL)
 	gen := func(ctx context.Context) (map[string]string, error) {
 		return tc.GenerateToken(ctx, proxy)
 	}
