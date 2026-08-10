@@ -24,9 +24,18 @@ func TestAccountDetailsMarshal(t *testing.T) {
 			want: map[string]any{"user_exist": false},
 		},
 		{
+			// hey-you parity: a failed crawl is a bare {"error": true} — no
+			// message, no user_exist. The failure text lives in logs + metrics.
 			name: "error entry",
-			in:   AccountDetails{Website: "AMAZON", ErrorMsg: "timed out"},
-			want: map[string]any{"error_msg": "timed out"},
+			in:   AccountDetails{Website: "AMAZON", Error: true},
+			want: map[string]any{"error": true},
+		},
+		{
+			// An error entry must NOT carry user_exist or rich data even if the
+			// struct happens to hold them — Error short-circuits the success path.
+			name: "error suppresses user_exist and data",
+			in:   AccountDetails{Website: "PINTEREST", Error: true, UserExist: ptrBool(true), Data: map[string]any{"x": 1}},
+			want: map[string]any{"error": true},
 		},
 		{
 			name: "rich data flattened alongside user_exist",

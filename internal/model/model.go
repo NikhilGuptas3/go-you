@@ -37,7 +37,12 @@ type PersonaRequest struct {
 type AccountDetails struct {
 	Website   string `json:"website"`
 	UserExist *bool  `json:"user_exist,omitempty"`
-	ErrorMsg  string `json:"error_msg,omitempty"`
+	// Error marks a failed crawl. Matching hey-you exactly, a failed website's
+	// account entry is a bare {"error": true} — no message, no user_exist, no
+	// website key (real_time_data_service.py:262). The raw failure message goes
+	// only to the logs (the "crawl failed" WARN line) and the spider_error
+	// Prometheus metric, never the client response.
+	Error bool `json:"-"`
 	// Data holds the rich per-site fields (e.g. TELEGRAM username/handle,
 	// GOOGLE reviews, GITHUB personal_profiles). Merged alongside user_exist in
 	// the final account_details map. Nil for simple crawlers.

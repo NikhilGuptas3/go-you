@@ -550,7 +550,10 @@ func buildSection(kind, key string, results []crawler.Result) *model.Section {
 	for _, res := range results {
 		ad := model.AccountDetails{Website: res.Website}
 		if res.Err != nil {
-			ad.ErrorMsg = res.Err.Error()
+			// hey-you parity: a failed crawl's entry is a bare {"error": true};
+			// the message is already logged (the "crawl failed" WARN in
+			// recordCrawlerTimings) and counted (spider_error), never returned.
+			ad.Error = true
 			failures++
 		} else {
 			ad.UserExist = res.UserExist

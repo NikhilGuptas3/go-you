@@ -18,7 +18,7 @@ func sampleResp() *model.PersonaResponse {
 				AccountDetails: []model.AccountDetails{
 					{Website: "SPOTIFY", UserExist: bp(true)},
 					{Website: "GITHUB", UserExist: bp(true), Data: map[string]any{"total_accounts": 2}},
-					{Website: "ADOBE", ErrorMsg: "adobe status 400"},
+					{Website: "ADOBE", Error: true},
 					{Website: "HIDDEN", UserExist: bp(true)}, // client_response:false
 				},
 				SocialProfileCount: 3,
@@ -73,6 +73,18 @@ func TestTransformAccountDetailsToMapAndDrop(t *testing.T) {
 	gh := ad["GITHUB"].(map[string]any)
 	if gh["total_accounts"] != float64(2) {
 		t.Errorf("GITHUB total_accounts = %v", gh["total_accounts"])
+	}
+	// ADOBE failed → client sees exactly {"error": true} (hey-you parity): the
+	// boolean is present, and no error_msg / user_exist leaks.
+	adobe := ad["ADOBE"].(map[string]any)
+	if adobe["error"] != true {
+		t.Errorf("ADOBE error = %v want true", adobe["error"])
+	}
+	if _, leaked := adobe["error_msg"]; leaked {
+		t.Error("ADOBE must not carry error_msg (message is logs-only)")
+	}
+	if _, leaked := adobe["user_exist"]; leaked {
+		t.Error("ADOBE error entry must not carry user_exist")
 	}
 	// social_profile_count recomputed after drop: SPOTIFY + GITHUB = 2 (ADOBE
 	// errored, HIDDEN dropped). transformSection sets it as a Go int.
