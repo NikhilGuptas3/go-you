@@ -29,6 +29,7 @@ import (
 	"github.com/sign3labs/go-you/internal/commondata"
 	"github.com/sign3labs/go-you/internal/config"
 	"github.com/sign3labs/go-you/internal/crawler"
+	"github.com/sign3labs/go-you/internal/crawler/tokenpool"
 	"github.com/sign3labs/go-you/internal/crawler/upi"
 	"github.com/sign3labs/go-you/internal/handler"
 	"github.com/sign3labs/go-you/internal/intelligence"
@@ -159,23 +160,9 @@ func main() {
 		// Email — uTLS
 		crawler.NewGaanaEmail(cfg.HTTPTimeout),
 		crawler.NewJeevansathiEmail(cfg.HTTPTimeout),
-		// Token-gated (Phase B) — two-step (fetch cookie/token, then check).
-		// SNAPDEAL is the reference: cookie-only + uTLS, both channels.
-		crawler.NewSnapdealPhone(cfg.HTTPTimeout),
-		crawler.NewSnapdealEmail(cfg.HTTPTimeout),
-		// Phase B1 — the six easy token-gated sites.
-		crawler.NewEventbrite(cfg.HTTPTimeout),     // email
-		crawler.NewTrivago(cfg.HTTPTimeout),        // email
-		crawler.NewVimeo(cfg.HTTPTimeout),          // email
-		crawler.NewOyorooms(cfg.HTTPTimeout),       // phone (uTLS)
-		crawler.NewZohoPhone(cfg.HTTPTimeout),      // both
-		crawler.NewZohoEmail(cfg.HTTPTimeout),      //
-		crawler.NewShopcluesPhone(cfg.HTTPTimeout), // both
-		crawler.NewShopcluesEmail(cfg.HTTPTimeout), //
-		// Phase B2 — token-gated sites that parse their token from the HTML body.
-		crawler.NewTumblr(cfg.HTTPTimeout),     // email (regex API_TOKEN)
-		crawler.NewQuora(cfg.HTTPTimeout),      // email (HTML scan; uTLS, Safari->Chrome)
-		crawler.NewCodecademy(cfg.HTTPTimeout), // email (two GETs, <meta> csrf)
+		// NOTE: the token-gated two-step crawlers (Snapdeal, the Phase-B1/B2 sites,
+		// Microsoft, Apple, Twitter) are TokenCrawlers and are registered separately
+		// below, each wired to the token pool via WithTokenSource.
 
 		// --- 2026-08-10 flow audit: missing EMAIL variants of sites go-you had
 		// registered PHONE-only (hey-you runs both flows via *_email.py wrappers).
@@ -193,11 +180,50 @@ func main() {
 		crawler.NewFacebookPhone(cfg.HTTPTimeout), // phone (GraphQL doc_id)
 		crawler.NewFacebookEmail(cfg.HTTPTimeout), // email (GraphQL doc_id)
 
-		// --- Tier 2: two-step inline (fetch token, then check).
-		crawler.NewMicrosoftPhone(cfg.HTTPTimeout), // phone (authorize->GetCredentialType)
-		crawler.NewMicrosoftEmail(cfg.HTTPTimeout), // email
-		crawler.NewTwitterPhone(cfg.HTTPTimeout),   // phone (begin_password_reset, uTLS)
-		crawler.NewAppleEmail(cfg.HTTPTimeout),     // email (account.apple.com -> validation/appleid)
+	}
+
+	// --- Token pool (background pre-warm of two-step tokens) ---
+	// Every two-step (TokenCrawler) site mints an identifier-agnostic session
+	// token in step 1; the pool pre-warms those off the request path so a check
+	// can skip step 1. Each crawler is wired to consult the manager
+	// (WithTokenSource) AND registered with it (the manager calls the crawler's
+	// GenerateToken to refill). On a cold/empty pool the crawler still generates
+	// inline (get_or_generate_token fallback), so behavior is identical whether
+	// the pool is warm or not. Gated by enable_token_pool (default ON; the config
+	// key can force OFF without a redeploy).
+	tokenPoolMgr := tokenpool.NewManager(proxyURL)
+	// Each two-step crawler is constructed with WithTokenSource(tokenPoolMgr) so
+	// its Check consults the pool first; the loop below registers each with the
+	// manager (for background refill) and adds it to the crawl set.
+	tokenCrawlers := []crawler.Crawler{
+		// Phase B reference + easy sites.
+		crawler.NewSnapdealPhone(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewSnapdealEmail(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewEventbrite(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewTrivago(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewVimeo(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewOyorooms(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewZohoPhone(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewZohoEmail(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewShopcluesPhone(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewShopcluesEmail(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		// Phase B2 (HTML-parsed token).
+		crawler.NewTumblr(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewQuora(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewCodecademy(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		// Tier 2.
+		crawler.NewMicrosoftPhone(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewMicrosoftEmail(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewAppleEmail(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+		crawler.NewTwitterPhone(cfg.HTTPTimeout).WithTokenSource(tokenPoolMgr),
+	}
+	// Register each with the pool (they all implement TokenCrawler) and add to the
+	// crawl set.
+	for _, tc := range tokenCrawlers {
+		if reg, ok := tc.(crawler.TokenCrawler); ok {
+			tokenPoolMgr.Register(reg)
+		}
+		crawlers = append(crawlers, tc)
 	}
 
 	// UPI (phone) — needs config (upi_config + cashfree creds), so only when the
@@ -378,6 +404,17 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	// Start the token pool unless disabled. Default ON; the enable_token_pool
+	// config key (MySQL configs table) can force it OFF without a redeploy. In
+	// LOCAL_DEV there is no config fetcher, so honor the default (ON) — harmless,
+	// the pools just generate against whatever proxy is set. Stopped on shutdown.
+	poolCtx, poolCancel := context.WithCancel(context.Background())
+	if tokenPoolEnabled(appCfg) {
+		tokenPoolMgr.Start(poolCtx)
+	} else {
+		mainLog.Info("token pool disabled (enable_token_pool=false)")
+	}
+
 	// Graceful shutdown.
 	go func() {
 		mainLog.Info("go-you listening", "port", cfg.Port)
@@ -389,10 +426,30 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	poolCancel()
+	tokenPoolMgr.Stop()
 	mainLog.Info("shutting down...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+}
+
+// tokenPoolEnabled reports whether the background token pool should run. Default
+// ON; the enable_token_pool config key (MySQL configs table) overrides — set it
+// to false to disable pooling without a redeploy (matches hey-you's key). A nil
+// fetcher (LOCAL_DEV) => default ON.
+func tokenPoolEnabled(appCfg *appconfig.Fetcher) bool {
+	if appCfg == nil {
+		return true
+	}
+	switch v := appCfg.Get("enable_token_pool", true).(type) {
+	case bool:
+		return v
+	case string:
+		return v != "false" && v != "0" && v != ""
+	default:
+		return true
+	}
 }
 
 // wappsureBearer resolves the WhatsApp wappsure vendor API key from

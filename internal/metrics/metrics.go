@@ -102,6 +102,23 @@ var (
 		Name: "you_intelligence",
 		Help: "Status of intelligence developed in you",
 	}, []string{"tenant", "feature_name", "status"})
+
+	// TokenPool mirrors the Python 'token_pool' counter (base_api_spider.py:48).
+	// Labels: website, status, msg. status ∈ {found (request served from a warm
+	// pooled token), not_found (pool empty → generated inline), add_succ, add_fail}.
+	// msg carries a bounded error class on add_fail (via metrics.ErrorClass),
+	// never a raw error string.
+	TokenPool = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "token_pool",
+		Help: "token pool status",
+	}, []string{"website", "status", "msg"})
+
+	// TokenPoolSize mirrors the Python 'token_pool_gauge' — current warm-token
+	// count per site+kind, set by the background refill loop after each cycle.
+	TokenPoolSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "token_pool_size",
+		Help: "Current number of warm tokens in the pool",
+	}, []string{"website", "kind"})
 )
 
 // ErrorClass maps an arbitrary crawler error message to one of a small fixed

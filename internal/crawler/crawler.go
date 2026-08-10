@@ -60,6 +60,66 @@ type DetailCrawler interface {
 	CheckDetail(ctx context.Context, identifier string, proxyURL *url.URL) (userExist *bool, data map[string]any, err error)
 }
 
+// Token is one identifier-agnostic session token — a shared CSRF / cookie /
+// bearer fetched by a two-step crawler's step 1 that can serve many different
+// identifier lookups. It mirrors the Python token dict: the site-specific values
+// plus usage/creation bookkeeping the pool manages.
+type Token struct {
+	// Values are the site-specific token fields (e.g. {"csrftoken": "…"},
+	// {"authenticity_token": "…", "cookie": "…"}). Opaque to the pool; the
+	// crawler's CheckWithToken interprets them.
+	Values map[string]string
+	// Usages counts how many checks have used this token (the pool evicts at
+	// USE_LIMIT). Created is when it was minted (the pool evicts at Created+TTL).
+	Usages  int
+	Created time.Time
+}
+
+// TokenSource supplies a warm pooled token for a (website, kind), or (nil,false)
+// on a miss. The token pool's Manager implements it. A crawler holds one
+// (possibly nil) and consults it before doing its own step 1 — a nil source, or
+// a miss, means "generate inline". This is the seam that lets the background pool
+// short-circuit step 1 without the crawler knowing about the pool package.
+type TokenSource interface {
+	GetToken(website string, kind Kind) (map[string]string, bool)
+}
+
+// tokenVia returns a token for the crawler: a warm one from src on a hit, else a
+// freshly generated one via gen (the get_or_generate_token fallback). src may be
+// nil (always generate). It is the shared helper every TokenCrawler's Check uses
+// so the pool/inline decision lives in one place.
+func tokenVia(ctx context.Context, src TokenSource, website string, kind Kind, gen func() (map[string]string, error)) (map[string]string, error) {
+	if src != nil {
+		if tok, ok := src.GetToken(website, kind); ok {
+			return tok, nil
+		}
+	}
+	return gen()
+}
+
+// TokenCrawler is the optional extension for the two-step token-gated crawlers
+// (Twitter, Microsoft, Apple, Zoho, …). It splits the Python get_login_response
+// into its two faithful halves so a background pool can pre-warm step 1:
+//
+//   - GenerateToken performs step 1 — fetch the identifier-AGNOSTIC session
+//     token (cookie/CSRF/bearer). The pool calls this off the request path.
+//   - CheckWithToken performs step 2 — the existence probe for one identifier,
+//     using a token (pooled or freshly generated).
+//
+// A TokenCrawler's plain Check (from Crawler) still works standalone: it does
+// GenerateToken then CheckWithToken inline (the stateless path), so a crawler is
+// fully functional whether or not a pool is attached. The pool, when present,
+// simply supplies a warm token to skip step 1.
+type TokenCrawler interface {
+	Crawler
+	// GenerateToken fetches a fresh session token (step 1). It must NOT depend on
+	// any identifier — the returned token is reusable across lookups.
+	GenerateToken(ctx context.Context, proxyURL *url.URL) (map[string]string, error)
+	// CheckWithToken runs the existence probe (step 2) for identifier using the
+	// given token values. proxyURL may be nil.
+	CheckWithToken(ctx context.Context, identifier string, token map[string]string, proxyURL *url.URL) (bool, error)
+}
+
 // TLSMode selects the TLS ClientHello fingerprint a crawler's HTTP client
 // presents. Many hey-you spiders use curl_cffi to impersonate Chrome; sites that
 // fingerprint (JA3) will block Go's default net/http hello. Crawlers that need

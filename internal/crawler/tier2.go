@@ -26,9 +26,13 @@ import (
 // Verdict: IfExistsResult 5 => exist; 0 or 1 => not; else NoConditionMatched.
 // Plain TLS (Python uses the default requests client — no impersonation).
 // Identifier: email = the address; phone = the international number (+CC).
+// Microsoft is a TokenCrawler: its step-1 token (the 7 scraped values + the
+// step-1 cookie) is identifier-agnostic and poolable. tokens is the optional
+// warm-token source (nil => always generate inline).
 type Microsoft struct {
 	timeout time.Duration
 	kind    Kind
+	tokens  TokenSource
 }
 
 func NewMicrosoftPhone(timeout time.Duration) *Microsoft {
@@ -37,6 +41,11 @@ func NewMicrosoftPhone(timeout time.Duration) *Microsoft {
 func NewMicrosoftEmail(timeout time.Duration) *Microsoft {
 	return &Microsoft{timeout: timeout, kind: KindEmail}
 }
+
+// WithTokenSource wires the crawler to consult a token pool before generating
+// inline. Called once at composition; the base constructor stays pool-agnostic.
+func (c *Microsoft) WithTokenSource(src TokenSource) *Microsoft { c.tokens = src; return c }
+
 func (c *Microsoft) Website() string { return "MICROSOFT" }
 func (c *Microsoft) Kind() Kind      { return c.kind }
 
@@ -54,7 +63,12 @@ var (
 	msHpgid   = regexp.MustCompile(`"hpgid":(.*?),`)
 )
 
-func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
+// GenerateToken performs step 1: GET the authorize page, scrape the 7 session
+// tokens from the HTML, and capture the cookies the page set. All are
+// identifier-agnostic, so the pool can hand this token to any lookup. The cookie
+// string is carried in the token (not left in a jar) so a pooled token works on
+// a fresh step-2 client.
+func (c *Microsoft) GenerateToken(ctx context.Context, proxyURL *url.URL) (map[string]string, error) {
 	ua := randomUA()
 	client := newHTTPClientJar(proxyURL, c.timeout, TLSDefault) // Python: default requests, no impersonation
 
@@ -66,10 +80,10 @@ func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.
 		"Sec-Fetch-User": "?1", "Upgrade-Insecure-Requests": "1", "User-Agent": ua,
 	})
 	if err != nil {
-		return false, fmt.Errorf("microsoft init: %w", err)
+		return nil, fmt.Errorf("microsoft init: %w", err)
 	}
 	if st1 != 200 {
-		return false, fmt.Errorf("microsoft: init status %d", st1)
+		return nil, fmt.Errorf("microsoft: init status %d", st1)
 	}
 	get := func(re *regexp.Regexp) string {
 		if m := re.FindSubmatch(body1); len(m) == 2 {
@@ -81,8 +95,35 @@ func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.
 	apiCanary, corrID := get(msCanary), get(msCorrID)
 	sessionID, hpgact, hpgid := get(msSession), get(msHpgact), get(msHpgid)
 	if flowToken == "" || sCtx == "" || apiCanary == "" || corrID == "" || sessionID == "" || hpgact == "" || hpgid == "" {
-		return false, fmt.Errorf("microsoft: token parsing failed")
+		return nil, fmt.Errorf("microsoft: token parsing failed")
 	}
+	// Capture any cookie the authorize page set so a pooled token (fresh step-2
+	// client, empty jar) still carries it; the inline path relied on the jar.
+	cookie := cookieStringFor(client, microsoftLoginURL)
+	return map[string]string{
+		"flowToken": flowToken,
+		"sCtx":      sCtx,
+		"apiCanary": apiCanary,
+		"corrID":    corrID,
+		"sessionID": sessionID,
+		"hpgact":    hpgact,
+		"hpgid":     hpgid,
+		"cookie":    cookie,
+	}, nil
+}
+
+// CheckWithToken performs step 2 (GetCredentialType) for identifier using the
+// given token values. The cookie is sent as an explicit header so the token
+// works whether it came from the pool or an inline fetch.
+func (c *Microsoft) CheckWithToken(ctx context.Context, identifier string, token map[string]string, proxyURL *url.URL) (bool, error) {
+	flowToken, sCtx := token["flowToken"], token["sCtx"]
+	apiCanary, corrID := token["apiCanary"], token["corrID"]
+	sessionID, hpgact, hpgid := token["sessionID"], token["hpgact"], token["hpgid"]
+	if flowToken == "" || sCtx == "" || apiCanary == "" || corrID == "" || sessionID == "" || hpgact == "" || hpgid == "" {
+		return false, fmt.Errorf("microsoft: empty token")
+	}
+	ua := randomUA()
+	client := newHTTPClientJar(proxyURL, c.timeout, TLSDefault)
 
 	// step 2: GetCredentialType. Body built to match Python byte-for-byte
 	// (username, originalRequest=sCtx, flowToken, country IN).
@@ -103,13 +144,17 @@ func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.
 		"flowToken":                      flowToken,
 		"isAccessPassSupported":          true,
 	})
-	st2, body2, _, err := doRequestFull(ctx, client, "POST", microsoftLoginURL, strings.NewReader(string(payload)), map[string]string{
+	headers := map[string]string{
 		"Accept": "application/json", "Content-type": "application/json; charset=UTF-8",
 		"Origin": "https://login.microsoftonline.com", "Referer": microsoftInitURL,
 		"Sec-Fetch-Dest": "empty", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin",
 		"User-Agent": ua, "canary": apiCanary, "client-request-id": corrID,
 		"hpgact": hpgact, "hpgid": hpgid, "hpgrequestid": sessionID,
-	})
+	}
+	if cookie := token["cookie"]; cookie != "" {
+		headers["Cookie"] = cookie
+	}
+	st2, body2, _, err := doRequestFull(ctx, client, "POST", microsoftLoginURL, strings.NewReader(string(payload)), headers)
 	if err != nil {
 		return false, err
 	}
@@ -132,6 +177,18 @@ func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.
 	}
 }
 
+// Check is the standalone existence probe: get a token (pooled or inline) then
+// run step 2 — the faithful get_or_generate_token flow.
+func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
+	token, err := tokenVia(ctx, c.tokens, c.Website(), c.Kind(), func() (map[string]string, error) {
+		return c.GenerateToken(ctx, proxyURL)
+	})
+	if err != nil {
+		return false, err
+	}
+	return c.CheckWithToken(ctx, identifier, token, proxyURL)
+}
+
 // --- TWITTER (phone) ---
 // crawler/spiders/social/twitter/twitter.py + twitter_phone.py.
 // step 1: GET begin_password_reset → cookie (jar) + authenticity_token scraped
@@ -147,53 +204,84 @@ func (c *Microsoft) Check(ctx context.Context, identifier string, proxyURL *url.
 //
 // (go-you already has TWITTER *email* — the token-free email_available.json
 // crawler in simple_email.go. This is the phone flow, which needs the two-step.)
-type TwitterPhone struct{ timeout time.Duration }
+// TwitterPhone is a TokenCrawler: its step-1 token (authenticity_token + the
+// step-1 cookies) is identifier-agnostic and poolable. tokens is the optional
+// warm-token source (nil => always generate inline).
+type TwitterPhone struct {
+	timeout time.Duration
+	tokens  TokenSource
+}
 
 func NewTwitterPhone(timeout time.Duration) *TwitterPhone { return &TwitterPhone{timeout: timeout} }
-func (c *TwitterPhone) Website() string                   { return "TWITTER" }
-func (c *TwitterPhone) Kind() Kind                        { return KindPhone }
+
+// WithTokenSource returns the crawler wired to consult a token pool before
+// generating inline. Called once at composition; the base constructor stays
+// pool-agnostic so tests and the stateless path need no pool.
+func (c *TwitterPhone) WithTokenSource(src TokenSource) *TwitterPhone { c.tokens = src; return c }
+
+func (c *TwitterPhone) Website() string { return "TWITTER" }
+func (c *TwitterPhone) Kind() Kind      { return KindPhone }
 
 const twitterResetURL = "https://twitter.com/account/begin_password_reset"
 
 var twitterAuthTokenRe = regexp.MustCompile(`name="authenticity_token" value="(.*?)"`)
 
-func (c *TwitterPhone) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
-	ua := randomUA()
+// GenerateToken performs step 1: GET the reset page, scrape the
+// authenticity_token, and capture the cookies the page set. Both are
+// identifier-agnostic, so the pool can hand this token to any lookup. The cookie
+// string is carried in the token (not left in a jar) so a pooled token works on
+// a fresh step-2 client — matching Python threading the cookie through by hand.
+func (c *TwitterPhone) GenerateToken(ctx context.Context, proxyURL *url.URL) (map[string]string, error) {
 	client := newHTTPClientJar(proxyURL, c.timeout, TLSChrome) // Python: curl_cffi impersonate=chrome
-
-	// step 1: GET the reset page → cookie lands in the jar; scrape the CSRF token.
 	st1, body1, _, err := doRequestFull(ctx, client, "GET", twitterResetURL, nil, map[string]string{
 		"authority":       "twitter.com",
 		"accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"accept-language": "en-GB,en;q=0.9", "sec-fetch-dest": "document",
 		"sec-fetch-mode": "navigate", "sec-fetch-site": "none", "sec-fetch-user": "?1",
-		"upgrade-insecure-requests": "1", "user-agent": ua,
+		"upgrade-insecure-requests": "1", "user-agent": randomUA(),
 	})
 	if err != nil {
-		return false, fmt.Errorf("twitter cookie: %w", err)
+		return nil, fmt.Errorf("twitter cookie: %w", err)
 	}
 	if st1 != 200 {
-		return false, fmt.Errorf("twitter: cookie page status %d", st1)
+		return nil, fmt.Errorf("twitter: cookie page status %d", st1)
 	}
 	m := twitterAuthTokenRe.FindSubmatch(body1)
 	if len(m) != 2 || len(m[1]) == 0 {
-		return false, fmt.Errorf("twitter: authenticity_token not found")
+		return nil, fmt.Errorf("twitter: authenticity_token not found")
 	}
-	authToken := string(m[1])
+	// Python strips the transient "fm=0; " marker cookie before reuse.
+	cookie := strings.Replace(cookieStringFor(client, twitterResetURL), "fm=0; ", "", 1)
+	return map[string]string{
+		"authenticity_token": string(m[1]),
+		"cookie":             cookie,
+	}, nil
+}
 
-	// step 2: POST with the CSRF + the international number. The jar replays the
-	// step-1 cookies automatically (same origin), matching Python's cookie reuse.
+// CheckWithToken performs step 2 for identifier using the given token
+// (authenticity_token + cookie). The cookie is sent as an explicit header so the
+// token works whether it came from the pool or an inline fetch.
+func (c *TwitterPhone) CheckWithToken(ctx context.Context, identifier string, token map[string]string, proxyURL *url.URL) (bool, error) {
+	authToken := token["authenticity_token"]
+	if authToken == "" {
+		return false, fmt.Errorf("twitter: empty token")
+	}
+	client := newHTTPClientJar(proxyURL, c.timeout, TLSChrome)
 	form := "authenticity_token=" + url.QueryEscape(authToken) +
 		"&account_identifier=" + url.QueryEscape(internationalNumber(identifier))
-	st2, body2, _, err := doRequestFull(ctx, client, "POST", twitterResetURL, strings.NewReader(form), map[string]string{
+	headers := map[string]string{
 		"authority":       "twitter.com",
 		"accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"accept-language": "en-GB,en;q=0.9", "cache-control": "max-age=0",
 		"content-type": "application/x-www-form-urlencoded", "origin": "https://twitter.com",
 		"referer": twitterResetURL, "sec-fetch-dest": "document", "sec-fetch-mode": "navigate",
 		"sec-fetch-site": "same-origin", "sec-fetch-user": "?1", "upgrade-insecure-requests": "1",
-		"user-agent": ua,
-	})
+		"user-agent": randomUA(),
+	}
+	if cookie := token["cookie"]; cookie != "" {
+		headers["cookie"] = cookie
+	}
+	st2, body2, _, err := doRequestFull(ctx, client, "POST", twitterResetURL, strings.NewReader(form), headers)
 	if err != nil {
 		return false, err
 	}
@@ -225,6 +313,18 @@ func (c *TwitterPhone) Check(ctx context.Context, identifier string, proxyURL *u
 	return false, fmt.Errorf("twitter: no condition matched (status=%d)", st2)
 }
 
+// Check is the standalone existence probe: get a token (pooled or inline) then
+// run step 2 — the faithful get_or_generate_token flow.
+func (c *TwitterPhone) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
+	token, err := tokenVia(ctx, c.tokens, c.Website(), c.Kind(), func() (map[string]string, error) {
+		return c.GenerateToken(ctx, proxyURL)
+	})
+	if err != nil {
+		return false, err
+	}
+	return c.CheckWithToken(ctx, identifier, token, proxyURL)
+}
+
 // --- APPLE (email) ---
 // crawler/spiders/softwares/apple/apple.py + apple_email.py. Two-step inline
 // (the background token pool is a latency optimization we skip, same as the
@@ -241,11 +341,22 @@ func (c *TwitterPhone) Check(ctx context.Context, identifier string, proxyURL *u
 //
 // Verdict: 403 => captcha (error, not a false verdict); 200 + used==true =>
 // exist; used==false OR appleOwnedDomain==true => not-exist; else NoConditionMatched.
-type AppleEmail struct{ timeout time.Duration }
+// AppleEmail is a TokenCrawler: its step-1 token (aidsp session id + scnt + the
+// built cookie string) is identifier-agnostic and poolable. tokens is the
+// optional warm-token source (nil => always generate inline).
+type AppleEmail struct {
+	timeout time.Duration
+	tokens  TokenSource
+}
 
 func NewAppleEmail(timeout time.Duration) *AppleEmail { return &AppleEmail{timeout: timeout} }
-func (c *AppleEmail) Website() string                 { return "APPLE" }
-func (c *AppleEmail) Kind() Kind                      { return KindEmail }
+
+// WithTokenSource wires the crawler to consult a token pool before generating
+// inline. Called once at composition; the base constructor stays pool-agnostic.
+func (c *AppleEmail) WithTokenSource(src TokenSource) *AppleEmail { c.tokens = src; return c }
+
+func (c *AppleEmail) Website() string { return "APPLE" }
+func (c *AppleEmail) Kind() Kind      { return KindEmail }
 
 const (
 	appleAccountURL    = "https://account.apple.com/account"
@@ -258,7 +369,12 @@ const (
 
 var appleAidspRe = regexp.MustCompile(`aidsp=(.*?);`)
 
-func (c *AppleEmail) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
+// GenerateToken performs step 1: GET the bootstrap page, read the aidsp cookie
+// (Set-Cookie) and the scnt header, and build the cookie string exactly as
+// parse_cookie does. All are identifier-agnostic, so the pool can hand this
+// token to any lookup; the cookie string is carried in the token so a pooled
+// token works on a fresh step-2 client.
+func (c *AppleEmail) GenerateToken(ctx context.Context, proxyURL *url.URL) (map[string]string, error) {
 	client := newHTTPClientJar(proxyURL, c.timeout, TLSDefault) // Python: default requests, no impersonation
 
 	// step 1: bootstrap → aidsp cookie + scnt header.
@@ -273,24 +389,40 @@ func (c *AppleEmail) Check(ctx context.Context, identifier string, proxyURL *url
 		"sec-ch-ua-mobile": "?0",
 	})
 	if err != nil {
-		return false, fmt.Errorf("apple cookie: %w", err)
+		return nil, fmt.Errorf("apple cookie: %w", err)
 	}
 	if st1 == 403 {
-		return false, fmt.Errorf("apple: captcha (cookie step 403)")
+		return nil, fmt.Errorf("apple: captcha (cookie step 403)")
 	}
 	// aidsp comes from Set-Cookie; scnt from a response header.
 	setCookie := strings.Join(hdr1.Values("Set-Cookie"), "; ")
 	m := appleAidspRe.FindStringSubmatch(setCookie)
 	if len(m) != 2 || m[1] == "" {
-		return false, fmt.Errorf("apple: aidsp cookie not found")
+		return nil, fmt.Errorf("apple: aidsp cookie not found")
 	}
 	aidsp := m[1]
 	scnt := hdr1.Get("scnt")
 	if scnt == "" {
-		return false, fmt.Errorf("apple: scnt header not found")
+		return nil, fmt.Errorf("apple: scnt header not found")
 	}
 	// parse_cookie builds this exact string.
 	cookie := "dslang=IN-EN; site=IND; geo=IN; idclient=web; aidsp=" + aidsp
+	return map[string]string{
+		"aidsp":  aidsp,
+		"scnt":   scnt,
+		"cookie": cookie,
+	}, nil
+}
+
+// CheckWithToken performs step 2 (validation/appleid) for identifier using the
+// given token (aidsp + scnt + cookie). The cookie is sent as an explicit header
+// so the token works whether it came from the pool or an inline fetch.
+func (c *AppleEmail) CheckWithToken(ctx context.Context, identifier string, token map[string]string, proxyURL *url.URL) (bool, error) {
+	aidsp, scnt, cookie := token["aidsp"], token["scnt"], token["cookie"]
+	if aidsp == "" || scnt == "" || cookie == "" {
+		return false, fmt.Errorf("apple: empty token")
+	}
+	client := newHTTPClientJar(proxyURL, c.timeout, TLSDefault)
 
 	// step 2: existence check.
 	payload, _ := json.Marshal(map[string]any{"emailAddress": identifier})
@@ -329,4 +461,16 @@ func (c *AppleEmail) Check(ctx context.Context, identifier string, proxyURL *url
 	default:
 		return false, fmt.Errorf("apple: no condition matched")
 	}
+}
+
+// Check is the standalone existence probe: get a token (pooled or inline) then
+// run step 2 — the faithful get_or_generate_token flow.
+func (c *AppleEmail) Check(ctx context.Context, identifier string, proxyURL *url.URL) (bool, error) {
+	token, err := tokenVia(ctx, c.tokens, c.Website(), c.Kind(), func() (map[string]string, error) {
+		return c.GenerateToken(ctx, proxyURL)
+	})
+	if err != nil {
+		return false, err
+	}
+	return c.CheckWithToken(ctx, identifier, token, proxyURL)
 }
