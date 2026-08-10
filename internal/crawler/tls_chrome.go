@@ -11,64 +11,82 @@ import (
 	utls "github.com/refraction-networking/utls"
 )
 
-// newChromeTransport returns an http.RoundTripper that presents a Chrome-like
-// TLS ClientHello (JA3) via uTLS, for the curl_cffi-impersonating spiders
-// (Amazon, the JSSO family, IRCTC, Freecharge, ...) that fingerprint and block
-// Go's stock hello.
+// helloID selects which browser ClientHello uTLS presents. Python's
+// base_api_spider does `impersonate = "safari" if self.ID == QUORA else "chrome"`
+// for curl_cffi; we mirror that with two presets.
+type helloID int
+
+const (
+	helloChrome helloID = iota
+	helloSafari
+)
+
+func (h helloID) utlsID() utls.ClientHelloID {
+	if h == helloSafari {
+		return utls.HelloSafari_Auto
+	}
+	return utls.HelloChrome_Auto
+}
+
+func (h helloID) name() string {
+	if h == helloSafari {
+		return "safari"
+	}
+	return "chrome"
+}
+
+// newImpersonatingTransport returns an http.RoundTripper that presents a
+// browser-like TLS ClientHello (JA3) via uTLS, for the curl_cffi-impersonating
+// spiders that fingerprint and block Go's stock hello. hello picks Chrome (most
+// sites) or Safari (QUORA only).
 //
 // It wires uTLS into an http.Transport's DialTLSContext: the TCP dial is
-// standard, then the connection is wrapped in a uTLS UClient using the
-// HelloChrome_Auto preset and handshaked with ALPN so HTTP/1.1 and h2 are both
-// offered. proxyURL, when set, is honored for the underlying TCP dial via
-// http.ProxyURL (CONNECT for https targets is handled by the transport).
-func newChromeTransport(proxyURL *url.URL) http.RoundTripper {
+// standard, then the connection is wrapped in a uTLS UClient using the chosen
+// preset and handshaked with ALPN forced to HTTP/1.1. proxyURL, when set, is
+// honored for the underlying TCP dial via http.ProxyURL (CONNECT for https
+// targets is handled by the transport).
+func newImpersonatingTransport(proxyURL *url.URL, hello helloID) http.RoundTripper {
 	t := &http.Transport{
-		// ForceAttemptHTTP2 is left false: the ALPN result from the uTLS
-		// handshake decides the protocol, and we only wrap with net/http's
-		// HTTP/1.1 path here for simplicity and broad compatibility.
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialChromeTLS(ctx, network, addr)
+			return dialImpersonatingTLS(ctx, network, addr, hello)
 		},
 	}
 	if proxyURL != nil {
 		t.Proxy = http.ProxyURL(proxyURL)
-		// When a proxy is set, DialTLSContext is bypassed for the CONNECT
-		// tunnel; the transport still needs a TLSClientConfig for the inner
-		// handshake. We fall back to stock TLS through the proxy in that case —
-		// uTLS-over-proxy needs a custom CONNECT dialer, deferred until a proxied
-		// uTLS site is actually observed to be blocked.
+		// When a proxy is set, DialTLSContext is bypassed for the CONNECT tunnel;
+		// the transport still needs a TLSClientConfig for the inner handshake. We
+		// fall back to stock TLS through the proxy in that case — uTLS-over-proxy
+		// needs a custom CONNECT dialer, deferred until a proxied uTLS site is
+		// actually observed to be blocked.
 		t.DialTLSContext = nil
 		t.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	}
 	return t
 }
 
-// dialChromeTLS performs a TCP dial then a uTLS Chrome handshake against addr
-// (host:port). It splits the SNI host from the port for the handshake config.
+// dialImpersonatingTLS performs a TCP dial then a uTLS handshake with the chosen
+// browser fingerprint against addr (host:port), splitting the SNI host from the
+// port for the handshake config.
 //
 // The paired http.Transport speaks only HTTP/1.1 over the returned conn, so we
-// must force the ALPN offer to "http/1.1" — otherwise the server negotiates h2
-// and the HTTP/1.1 transport misreads the h2 frames as a malformed response.
-// (curl_cffi's default for these spiders is effectively HTTP/1.1 too.) We build
-// a Chrome ClientHello spec and overwrite its ALPN extension to h1-only, which
-// keeps the Chrome JA3 fingerprint while constraining the protocol.
-func dialChromeTLS(ctx context.Context, network, addr string) (net.Conn, error) {
+// force the ALPN offer to "http/1.1" — otherwise the server negotiates h2 and
+// the HTTP/1.1 transport misreads the h2 frames. We build the preset's spec and
+// overwrite its ALPN extension to h1-only, which keeps the browser JA3
+// fingerprint while constraining the protocol.
+func dialImpersonatingTLS(ctx context.Context, network, addr string, hello helloID) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
-		return nil, fmt.Errorf("chrome-tls: split %q: %w", addr, err)
+		return nil, fmt.Errorf("%s-tls: split %q: %w", hello.name(), addr, err)
 	}
 	var d net.Dialer
 	raw, err := d.DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, err
 	}
-	// Build a Chrome ClientHello spec and rewrite its ALPN to advertise only
-	// "http/1.1", then apply it via HelloCustom so the override actually takes
-	// effect (applying a preset onto a HelloChrome_Auto UConn does not stick).
-	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+	spec, err := utls.UTLSIdToSpec(hello.utlsID())
 	if err != nil {
 		_ = raw.Close()
-		return nil, fmt.Errorf("chrome-tls: spec: %w", err)
+		return nil, fmt.Errorf("%s-tls: spec: %w", hello.name(), err)
 	}
 	for _, ext := range spec.Extensions {
 		if alpn, ok := ext.(*utls.ALPNExtension); ok {
@@ -78,11 +96,11 @@ func dialChromeTLS(ctx context.Context, network, addr string) (net.Conn, error) 
 	uconn := utls.UClient(raw, &utls.Config{ServerName: host}, utls.HelloCustom)
 	if err := uconn.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
-		return nil, fmt.Errorf("chrome-tls: apply preset %q: %w", host, err)
+		return nil, fmt.Errorf("%s-tls: apply preset %q: %w", hello.name(), host, err)
 	}
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
-		return nil, fmt.Errorf("chrome-tls: handshake %q: %w", host, err)
+		return nil, fmt.Errorf("%s-tls: handshake %q: %w", hello.name(), host, err)
 	}
 	return uconn, nil
 }

@@ -127,10 +127,9 @@ func (c *Tumblr) Check(ctx context.Context, identifier string, proxyURL *url.URL
 // revision, window_id, broadcastId). step2 POST the GraphQL query with those in
 // quora-* headers. data.loginInfoPreview.success bool.
 //
-// FIDELITY NOTE: Python impersonates SAFARI here (special-cased); go-you only has
-// a Chrome uTLS fingerprint, so this uses TLSChrome. If Quora TLS-gates on the
-// Safari hello, this may fail where Python passes — a known divergence to revisit
-// if a Safari uTLS mode is added.
+// TLS NOTE: Python impersonates SAFARI for QUORA specifically (base_api_spider:
+// `impersonate = "safari" if self.ID == QUORA else "chrome"`). Quora TLS-gates on
+// the Safari fingerprint and 403s a Chrome hello, so both steps use TLSSafari.
 // TokenCrawler: the 4 scraped tokens + the home-page cookie are identifier-
 // agnostic and poolable. A pooled token runs on a fresh step-2 client, so the
 // cookie travels in the token map (via cookieStringFor) rather than a jar.
@@ -153,11 +152,11 @@ const quoraGQLHash = "d99ac500aef54a8162e1f1e40a4ed5fe3df59f89599bdbb2ec9f9838a5
 
 const quoraCookieURL = "https://www.quora.com/"
 
-// GenerateToken performs step 1: GET the home page (uTLS Chrome), string-scan
-// the 4 quora-* tokens from the HTML, and capture the cookie. All identifier-
-// agnostic, so poolable.
+// GenerateToken performs step 1: GET the home page (uTLS Safari — Quora gates on
+// it), string-scan the 4 quora-* tokens from the HTML, and capture the cookie.
+// All identifier-agnostic, so poolable.
 func (c *Quora) GenerateToken(ctx context.Context, proxyURL *url.URL) (map[string]string, error) {
-	client := newHTTPClientJar(proxyURL, c.timeout, TLSChrome)
+	client := newHTTPClientJar(proxyURL, c.timeout, TLSSafari)
 	status, homeBody, _, err := doRequestFull(ctx, client, "GET", quoraCookieURL, nil, map[string]string{
 		"authority": "www.quora.com", "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 		"referer": "https://www.google.com/", "upgrade-insecure-requests": "1", "user-agent": randomUA(),
@@ -194,7 +193,7 @@ func (c *Quora) CheckWithToken(ctx context.Context, identifier string, token map
 	if formkey == "" || broadcastID == "" {
 		return false, fmt.Errorf("quora: empty token")
 	}
-	client := newHTTPClientJar(proxyURL, c.timeout, TLSChrome)
+	client := newHTTPClientJar(proxyURL, c.timeout, TLSSafari)
 	payload, _ := json.Marshal(map[string]any{
 		"queryName":  "LoginForm_loginInfoPreview_Query",
 		"variables":  map[string]any{"email": identifier},

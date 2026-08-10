@@ -133,6 +133,11 @@ const (
 	// curl_cffi-sensitive sites flagged in the plan (Amazon, JSSO family,
 	// IRCTC, Freecharge, ...).
 	TLSChrome
+	// TLSSafari presents a Safari-like ClientHello (uTLS). Python special-cases
+	// exactly one site: `impersonate = "safari" if self.ID == QUORA else "chrome"`
+	// (base_api_spider.py) — Quora TLS-gates on the Safari fingerprint and 403s a
+	// Chrome hello. Only QUORA uses this mode.
+	TLSSafari
 )
 
 // newHTTPClient builds a client bound to a single proxy (or direct if nil) with
@@ -145,12 +150,15 @@ func newHTTPClient(proxyURL *url.URL, timeout time.Duration) *http.Client {
 }
 
 // newHTTPClientTLS is newHTTPClient with an explicit TLS fingerprint mode.
-// TLSChrome swaps in the uTLS round-tripper (newChromeTransport) so
-// curl_cffi-impersonating sites are not blocked; the crawlers stay unchanged
+// TLSChrome / TLSSafari swap in the uTLS round-tripper (newImpersonatingTransport)
+// so curl_cffi-impersonating sites are not blocked; the crawlers stay unchanged
 // and only declare which mode they need.
 func newHTTPClientTLS(proxyURL *url.URL, timeout time.Duration, mode TLSMode) *http.Client {
-	if mode == TLSChrome {
-		return &http.Client{Transport: newChromeTransport(proxyURL), Timeout: timeout}
+	switch mode {
+	case TLSChrome:
+		return &http.Client{Transport: newImpersonatingTransport(proxyURL, helloChrome), Timeout: timeout}
+	case TLSSafari:
+		return &http.Client{Transport: newImpersonatingTransport(proxyURL, helloSafari), Timeout: timeout}
 	}
 	transport := &http.Transport{}
 	if proxyURL != nil {
