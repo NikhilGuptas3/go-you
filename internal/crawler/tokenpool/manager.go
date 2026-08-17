@@ -12,23 +12,29 @@ import (
 // DefaultConfigs mirrors the in-scope entries of the Python
 // WEBSITE_TOKEN_POOL_CONFIG_DEFAULT (constants/config_constants.py:423+), keyed
 // by website id. Only the identifier-agnostic two-step sites go-you pools are
-// listed. Values (SIZE/TTL/USE_LIMIT) are carried verbatim; SNAPDEAL's Python
-// SIZE of 300 is capped to a sane in-memory default (a warm pool that large is
-// pointless for a POC and would hammer the token endpoint at boot).
+// listed. SIZE/USE_LIMIT are carried from Python; SNAPDEAL's Python SIZE of 300
+// is capped to a sane in-memory default (a warm pool that large is pointless for
+// a POC and would hammer the token endpoint at boot).
+//
+// TTL is standardized to 10 minutes for every site (was per-site in Python).
+// UseLimit is deliberately LEFT PER-SITE so use-based eviction still protects
+// the sites whose upstream token is short-lived / use-once — notably ZOHO
+// (UseLimit 1): its token is evicted after a single use regardless of the 10-min
+// TTL, so a stale Zoho token is never presented even though the age cap is long.
 var DefaultConfigs = map[string]Config{
-	"APPLE":      {Size: 15, TTL: 300 * time.Second, UseLimit: 3},
-	"MICROSOFT":  {Size: 10, TTL: 300 * time.Second, UseLimit: 20},
-	"TWITTER":    {Size: 5, TTL: 300 * time.Second, UseLimit: 10},
-	"QUORA":      {Size: 5, TTL: 300 * time.Second, UseLimit: 30},
-	"TUMBLR":     {Size: 5, TTL: 300 * time.Second, UseLimit: 30},
-	"VIMEO":      {Size: 5, TTL: 300 * time.Second, UseLimit: 30},
-	"ZOHO":       {Size: 15, TTL: 25 * time.Second, UseLimit: 1},
-	"OYOROOMS":   {Size: 5, TTL: 300 * time.Second, UseLimit: 30},
-	"TRIVAGO":    {Size: 10, TTL: 300 * time.Second, UseLimit: 50},
-	"EVENTBRITE": {Size: 15, TTL: 1300 * time.Second, UseLimit: 100},
-	"SNAPDEAL":   {Size: 20, TTL: 2000 * time.Second, UseLimit: 20}, // Python SIZE 300 capped to 20
-	"SHOPCLUES":  {Size: 3, TTL: 20000 * time.Second, UseLimit: 80},
-	"CODECADEMY": {Size: 5, TTL: 300 * time.Second, UseLimit: 20}, // not in Python default; sane fallback
+	"APPLE":      {Size: 15, TTL: 600 * time.Second, UseLimit: 3},
+	"MICROSOFT":  {Size: 10, TTL: 600 * time.Second, UseLimit: 20},
+	"TWITTER":    {Size: 5, TTL: 600 * time.Second, UseLimit: 10},
+	"QUORA":      {Size: 5, TTL: 600 * time.Second, UseLimit: 30},
+	"TUMBLR":     {Size: 5, TTL: 600 * time.Second, UseLimit: 30},
+	"VIMEO":      {Size: 5, TTL: 600 * time.Second, UseLimit: 30},
+	"ZOHO":       {Size: 15, TTL: 600 * time.Second, UseLimit: 1}, // UseLimit 1: token still evicted after one use
+	"OYOROOMS":   {Size: 5, TTL: 600 * time.Second, UseLimit: 30},
+	"TRIVAGO":    {Size: 10, TTL: 600 * time.Second, UseLimit: 50},
+	"EVENTBRITE": {Size: 15, TTL: 600 * time.Second, UseLimit: 100},
+	"SNAPDEAL":   {Size: 20, TTL: 600 * time.Second, UseLimit: 20}, // Python SIZE 300 capped to 20
+	"SHOPCLUES":  {Size: 3, TTL: 600 * time.Second, UseLimit: 80},
+	"CODECADEMY": {Size: 5, TTL: 600 * time.Second, UseLimit: 20}, // not in Python default; sane fallback
 }
 
 // key identifies a pool by site+kind (a site can pool separately for phone and
