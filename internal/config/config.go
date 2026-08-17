@@ -46,13 +46,20 @@ type Config struct {
 	// proxy is enough to prove the path.
 	ProxyURL string
 
-	// NimbleProxyURL is an optional SECOND proxy egress for the sites hey-you
-	// pins to the NIMBLE vendor (vendor_choices), which their login endpoints
-	// require and which the default BrightData egress gets 403'd on — currently
-	// MICROSOFT and APPLE (verified: they mint tokens through Nimble but not
-	// BrightData). Empty => those sites fall back to ProxyURL. This is go-you's
-	// minimal port of per-site vendor_choices, not a full rotating vendor pool.
+	// NimbleProxyURL / SmartProxyURL are optional NAMED vendor egresses for the
+	// sites hey-you pins away from the default proxy (via vendor_choices or
+	// proxy_zone), because their login/home endpoints 403 the default egress.
+	// They fill the "nimble" and "smartproxy" slots in crawler.Egress; the
+	// per-site routing (crawler.SiteEgress) decides which site uses which:
+	//   - nimble    : MICROSOFT, APPLE (vendor-pinned NIMBLE — mint through Nimble)
+	//   - smartproxy: QUORA (zone-pinned USA — Smartproxy/Decodo US exit)
+	// Empty => sites routed to that slot fall back to ProxyURL. The URLs are
+	// plain, country-independent proxy strings (host:port creds only) — the
+	// geo/zone is a property of the chosen endpoint, not encoded per request.
+	// This is go-you's minimal port of per-site vendor pinning, not a full
+	// rotating vendor pool.
 	NimbleProxyURL string
+	SmartProxyURL  string
 
 	// IPQSToken is the IPQualityScore API token for phone/email meta. IPQS is
 	// prod-disabled and out of scope for the full-parity build; retained only so
@@ -100,7 +107,8 @@ func Load() (*Config, error) {
 		DynamoMetaTable:    os.Getenv("DYNAMO_META_TABLE"),    // optional; empty => meta cache off
 		KinesisStream:      os.Getenv("KINESIS_STREAM_NAME"),  // optional; empty => analytics off
 		ProxyURL:           os.Getenv("PROXY_URL"),            // optional; empty => crawl direct
-		NimbleProxyURL:     os.Getenv("NIMBLE_PROXY_URL"),     // optional; empty => Nimble sites use ProxyURL
+		NimbleProxyURL:     os.Getenv("NIMBLE_PROXY_URL"),     // optional; empty => nimble-routed sites use ProxyURL
+		SmartProxyURL:      os.Getenv("SMARTPROXY_URL"),       // optional; empty => smartproxy-routed sites use ProxyURL
 		IPQSToken:          os.Getenv("IPQS_TOKEN"),           // optional; empty => skip meta
 		Namespace:          os.Getenv("NAMESPACE"),            // optional; drives configs_<ns> override
 		HTTPTimeout:        time.Duration(getEnvInt("CRAWLER_HTTP_TIMEOUT_MS", 2000)) * time.Millisecond,

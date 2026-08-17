@@ -23,21 +23,19 @@ var errNoConditionMatched = errors.New("no condition matched")
 // leaf-level timeout model (parents do not impose their own timeout — see the
 // hey-you-timeout-model note).
 //
-// The POC uses a single static proxy (or none) rather than the Python Redis
-// rotating pool. proxyURL may be nil => crawl direct. nimbleURL is an optional
-// second egress for NimbleSites (MICROSOFT/APPLE); nil => those sites use
-// proxyURL like everyone else.
+// The POC uses static proxies (or none) rather than the Python Redis rotating
+// pool. egress holds the default proxy plus any named vendor egresses and the
+// per-site routing between them. egress.Default may be nil => crawl direct.
 type Runner struct {
-	proxyURL  *url.URL
-	nimbleURL *url.URL
-	crawlers  []Crawler
+	egress   *Egress
+	crawlers []Crawler
 	// byKind indexes registered crawlers by kind then website, so a config-driven
 	// request can select exactly the sites the tenant enabled.
 	byKind map[Kind]map[string]Crawler
 }
 
 func NewRunner(proxyURL *url.URL, crawlers ...Crawler) *Runner {
-	r := &Runner{proxyURL: proxyURL, crawlers: crawlers, byKind: map[Kind]map[string]Crawler{}}
+	r := &Runner{egress: &Egress{Default: proxyURL}, crawlers: crawlers, byKind: map[Kind]map[string]Crawler{}}
 	for _, c := range crawlers {
 		m := r.byKind[c.Kind()]
 		if m == nil {
@@ -49,18 +47,19 @@ func NewRunner(proxyURL *url.URL, crawlers ...Crawler) *Runner {
 	return r
 }
 
-// WithNimbleProxy sets the second egress used for NimbleSites (the faithful port
-// of hey-you's per-site vendor_choices=["NIMBLE"]). Returns the runner for
-// chaining. nil leaves every site on the default proxy.
-func (r *Runner) WithNimbleProxy(nimbleURL *url.URL) *Runner {
-	r.nimbleURL = nimbleURL
+// WithEgress sets the named vendor egresses (nimble, smartproxy, …) used for the
+// per-site routing in SiteEgress, preserving the default proxy passed to
+// NewRunner. Returns the runner for chaining. A nil map leaves every site on the
+// default proxy.
+func (r *Runner) WithEgress(named map[string]*url.URL) *Runner {
+	r.egress.Named = named
 	return r
 }
 
-// proxyFor picks the egress for a website: Nimble for NimbleSites (when set),
-// else the default.
+// proxyFor picks the egress for a website via the per-site routing table, else
+// the default.
 func (r *Runner) proxyFor(website string) *url.URL {
-	return ProxyFor(website, r.proxyURL, r.nimbleURL)
+	return r.egress.ProxyForSite(website)
 }
 
 // Lookup returns the registered crawler for (kind, website), or nil. Used by the
