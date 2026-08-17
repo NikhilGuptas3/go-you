@@ -22,24 +22,35 @@ type Egress struct {
 }
 
 // SiteEgress routes specific websites to a named egress in Egress.Named. A site
-// absent here uses Egress.Default. This is go-you's port of hey-you's per-site
-// proxy pinning — vendor_choices=["NIMBLE"] and "proxy_zone": ProxyZone.USA —
-// collapsed onto go-you's named-egress model:
+// absent here uses Egress.Default (BrightData, pinned to India — see
+// deploy/secret.yaml PROXY_URL). The default India egress is what most India
+// e-commerce/OTT sites (Flipkart, Snapdeal, Gaana, Pinterest, …) require to
+// return a session — so those sites are deliberately NOT listed and use it.
 //
-//   - MICROSOFT, APPLE: vendor-pinned to NIMBLE (their login endpoints 403 the
-//     default egress). Verified they mint tokens through Nimble.
-//   - QUORA: zone-pinned to USA (social/quora/quora.py "proxy_zone":
-//     ProxyZone.USA). Quora 403s a non-US egress on the home fetch regardless of
-//     TLS fingerprint; routed to the smartproxy US exit.
+// Only the two sites we have LIVE-VERIFIED need a non-India vendor egress appear
+// here (Option B — minimal, evidence-based, not the full vendor_choices map):
 //
-// The name a site maps to is a logical vendor slot, not a hardcoded provider —
-// which concrete proxy fills "nimble" or "smartproxy" is set at wiring time from
-// the environment. Sites not listed (token-pool-only Python entries go-you hasn't
-// ported) are added here when observed to need a non-default egress.
+//   - APPLE -> "nimble" : Apple's login 403s BrightData; mints through Nimble.
+//     Verified (Apple 3/3 tokens via Nimble).
+//   - MICROSOFT -> "smartproxy" : Microsoft's authorize page 403s BrightData;
+//     works through the US Smartproxy exit. Verified (8/8 Check runs via the US
+//     egress after the token-retry fix).
+//
+// NOT routed here on purpose, despite the vendor_choices map suggesting a US
+// vendor, because a POC proved routing them to a US/other egress does NOT help:
+//   - SNAPDEAL/GAANA/PINTEREST: need the INDIA default (Snapdeal 200+cookies on
+//     brd-in, 403 on US/Smartproxy). Leave them on the India default.
+//   - QUORA/ADOBE: 403 on EVERY egress tested (BrightData any country, Nimble,
+//     Smartproxy). No proxy route fixes them — they need residential rotation, a
+//     separate problem. Routing them anywhere is pointless, so they stay default.
+//
+// The name a site maps to is a logical vendor slot; which concrete proxy fills
+// "nimble"/"smartproxy" is set at wiring time from NIMBLE_PROXY_URL /
+// SMARTPROXY_URL. An unset slot falls back to Default, so a site here still
+// crawls (via the India BrightData) if its vendor proxy isn't configured.
 var SiteEgress = map[string]string{
-	"MICROSOFT": "nimble",
 	"APPLE":     "nimble",
-	"QUORA":     "smartproxy",
+	"MICROSOFT": "smartproxy",
 }
 
 // ProxyForSite returns the proxy a website should egress through: the named

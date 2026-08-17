@@ -15,23 +15,32 @@ func TestEgressProxyForSite(t *testing.T) {
 		Named:   map[string]*url.URL{"nimble": nimble, "smartproxy": smart},
 	}
 
-	// Nimble-routed sites use the nimble egress.
-	if got := e.ProxyForSite("MICROSOFT"); got != nimble {
-		t.Errorf("MICROSOFT should use nimble, got %v", got)
-	}
+	// Option B: only APPLE (nimble) and MICROSOFT (smartproxy) are routed — the
+	// two live-verified to need a non-India exit. Everything else uses the India
+	// default.
 	if got := e.ProxyForSite("APPLE"); got != nimble {
 		t.Errorf("APPLE should use nimble, got %v", got)
 	}
-	// QUORA is pinned to the US egress (hey-you ProxyZone.USA) via smartproxy.
-	if got := e.ProxyForSite("QUORA"); got != smart {
-		t.Errorf("QUORA should use smartproxy (US egress), got %v", got)
+	if got := e.ProxyForSite("MICROSOFT"); got != smart {
+		t.Errorf("MICROSOFT should use smartproxy, got %v", got)
 	}
-	// Unrouted sites use the default.
-	if got := e.ProxyForSite("TWITTER"); got != def {
-		t.Errorf("TWITTER should use default, got %v", got)
-	}
+	// India sites (Snapdeal/Gaana/Pinterest) must use the India DEFAULT, not a
+	// US vendor — the POC proved they 403 on US and need brd-in.
 	if got := e.ProxyForSite("SNAPDEAL"); got != def {
-		t.Errorf("SNAPDEAL should use default, got %v", got)
+		t.Errorf("SNAPDEAL should use default (India), got %v", got)
+	}
+	if got := e.ProxyForSite("GAANA"); got != def {
+		t.Errorf("GAANA should use default (India), got %v", got)
+	}
+	if got := e.ProxyForSite("PINTEREST"); got != def {
+		t.Errorf("PINTEREST should use default (India), got %v", got)
+	}
+	// QUORA 403s every egress => stays on default (routing it is pointless).
+	if got := e.ProxyForSite("QUORA"); got != def {
+		t.Errorf("QUORA should use default, got %v", got)
+	}
+	if got := e.ProxyForSite("FLIPKART"); got != def {
+		t.Errorf("FLIPKART should use default, got %v", got)
 	}
 }
 
@@ -41,10 +50,10 @@ func TestEgressFallbacks(t *testing.T) {
 	// A routed site whose named egress is unset falls back to Default.
 	e := &Egress{Default: def} // no Named map at all
 	if got := e.ProxyForSite("MICROSOFT"); got != def {
-		t.Errorf("MICROSOFT with no nimble configured should fall back to default, got %v", got)
+		t.Errorf("MICROSOFT with no smartproxy configured should fall back to default, got %v", got)
 	}
-	if got := e.ProxyForSite("QUORA"); got != def {
-		t.Errorf("QUORA with no smartproxy configured should fall back to default, got %v", got)
+	if got := e.ProxyForSite("APPLE"); got != def {
+		t.Errorf("APPLE with no nimble configured should fall back to default, got %v", got)
 	}
 
 	// Named present but the specific slot missing => Default.
