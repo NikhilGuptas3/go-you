@@ -3,7 +3,10 @@
     "list": [
       {
         "builtIn": 1,
-        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
         "enable": true,
         "hide": true,
         "iconColor": "rgba(0, 211, 255, 1)",
@@ -20,7 +23,11 @@
   "liveNow": false,
   "refresh": "30s",
   "schemaVersion": 39,
-  "tags": ["go-you", "osint", "persona"],
+  "tags": [
+    "go-you",
+    "osint",
+    "persona"
+  ],
   "templating": {
     "list": [
       {
@@ -36,8 +43,15 @@
         "type": "datasource"
       },
       {
-        "current": { "selected": true, "text": "go-you-poc", "value": "go-you-poc" },
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "current": {
+          "selected": true,
+          "text": "go-you-poc",
+          "value": "go-you-poc"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
         "definition": "label_values(api_status, namespace)",
         "hide": 0,
         "includeAll": false,
@@ -56,19 +70,27 @@
       }
     ]
   },
-  "time": { "from": "now-6h", "to": "now" },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
-  "title": "go-you · persona service",
+  "title": "go-you \u00b7 persona service",
   "uid": "go-you-persona",
-  "version": 1,
+  "version": 2,
   "weekStart": "",
   "panels": [
     {
       "type": "row",
       "title": "API",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "panels": []
     },
@@ -76,21 +98,53 @@
       "type": "timeseries",
       "title": "Request rate by status",
       "description": "Traffic to /v1/persona split by HTTP status.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 1
+      },
       "id": 1,
       "fieldConfig": {
         "defaults": {
           "unit": "reqps",
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "stacking": { "mode": "normal" } },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (status) (rate(api_status{namespace=\"$namespace\", api=\"/v1/persona\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"
@@ -101,33 +155,68 @@
       "type": "timeseries",
       "title": "API latency p50 / p95 / p99",
       "description": "End-to-end /v1/persona latency percentiles from the api_latency histogram.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
       "id": 2,
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "custom": { "drawStyle": "line", "fillOpacity": 5 },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["max", "lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le) (rate(api_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(api_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(api_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
           "legendFormat": "p99",
           "refId": "C"
@@ -138,26 +227,61 @@
       "type": "stat",
       "title": "Error rate (non-2xx)",
       "description": "Share of /v1/persona requests that were not a 200.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 9 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 9
+      },
       "id": 3,
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "min": 0,
           "max": 1,
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 0.01 },
-            { "color": "red", "value": 0.05 }
-          ] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "auto", "justifyMode": "auto" },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum(rate(api_status{namespace=\"$namespace\", status!=\"200\"}[$__rate_interval])) / clamp_min(sum(rate(api_status{namespace=\"$namespace\"}[$__rate_interval])), 1e-9)",
           "refId": "A"
         }
@@ -167,26 +291,59 @@
       "type": "gauge",
       "title": "Cache hit ratio",
       "description": "Persona/meta cache effectiveness: hit / (hit + miss). Only populates in-cluster (cache is off in LOCAL_DEV).",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 9 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 6,
+        "y": 9
+      },
       "id": 4,
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "min": 0,
           "max": 1,
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "red", "value": null },
-            { "color": "yellow", "value": 0.3 },
-            { "color": "green", "value": 0.6 }
-          ] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.3
+              },
+              {
+                "color": "green",
+                "value": 0.6
+              }
+            ]
+          }
         },
         "overrides": []
       },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum(rate(real_time_cache{namespace=\"$namespace\", status=\"hit\"}[$__rate_interval])) / clamp_min(sum(rate(real_time_cache{namespace=\"$namespace\"}[$__rate_interval])), 1e-9)",
           "refId": "A"
         }
@@ -196,24 +353,80 @@
       "type": "timeseries",
       "title": "ml_service call outcome",
       "description": "Health of the outbound ml_service call: ok vs error. A spike in error means presence scores / prediction are degrading.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 9 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
       "id": 5,
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
-          "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal" } },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "error" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
-          { "matcher": { "id": "byName", "options": "ok" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ok"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (status) (rate(ml_service_counter{namespace=\"$namespace\", stage=\"call\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"
@@ -224,29 +437,65 @@
       "type": "row",
       "title": "Crawlers",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
       "id": 101,
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Per-crawler latency p95",
-      "description": "Which crawler is the tail? website_latency bucketed by website — spots the straggler that sets the response floor.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 16 },
+      "description": "Which crawler is the tail? website_latency bucketed by website \u2014 spots the straggler that sets the response floor.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
       "id": 6,
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 1 },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 1
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"], "sortBy": "Max", "sortDesc": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "max"
+          ],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "histogram_quantile(0.95, sum by (le, website) (rate(website_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
           "legendFormat": "{{website}}",
           "refId": "A"
@@ -257,25 +506,95 @@
       "type": "timeseries",
       "title": "Crawler outcomes (ok / failed / timeout)",
       "description": "Per-crawler outcome rate from website_status.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 16 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
       "id": 7,
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
-          "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "failed" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
-          { "matcher": { "id": "byName", "options": "timeout" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
-          { "matcher": { "id": "byName", "options": "ok" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "timeout"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ok"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (status) (rate(website_status{namespace=\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"
@@ -286,17 +605,42 @@
       "type": "table",
       "title": "Top crawler errors by class",
       "description": "spider_error by website and bounded error class (timeout / no_condition / http_error / other).",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 25 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
       "id": 8,
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto", "filterable": true }, "unit": "ops" },
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          },
+          "unit": "ops"
+        },
         "overrides": []
       },
-      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "topk(15, sum by (website, msg) (rate(spider_error{namespace=\"$namespace\"}[$__rate_interval])))",
           "format": "table",
           "instant": true,
@@ -305,30 +649,73 @@
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "website": "Website", "msg": "Error class", "Value": "errors/s" } } }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "website": "Website",
+              "msg": "Error class",
+              "Value": "errors/s"
+            }
+          }
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "User-found rate per crawler",
       "description": "Of crawlers that returned a verdict, how often the user was found (user_exist found=true / all). A drop to zero usually means the site's signal broke.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 25 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
       "id": 9,
       "fieldConfig": {
         "defaults": {
           "unit": "percentunit",
           "min": 0,
           "max": 1,
-          "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 1 },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 1
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"], "sortBy": "Mean", "sortDesc": false }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean"
+          ],
+          "sortBy": "Mean",
+          "sortDesc": false
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (website_id) (rate(user_exist{namespace=\"$namespace\", found=\"true\"}[$__rate_interval])) / clamp_min(sum by (website_id) (rate(user_exist{namespace=\"$namespace\"}[$__rate_interval])), 1e-9)",
           "legendFormat": "{{website_id}}",
           "refId": "A"
@@ -339,25 +726,55 @@
       "type": "row",
       "title": "Intelligence",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
       "id": 102,
       "panels": []
     },
     {
       "type": "table",
       "title": "Intelligence feature errors",
-      "description": "you_intelligence by feature_name where status=error — which derived signals (digital_age, linked_ids, score, prediction) come back {error:true}.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "description": "you_intelligence by feature_name where status=error \u2014 which derived signals (digital_age, linked_ids, score, prediction) come back {error:true}.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 35
+      },
       "id": 10,
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto", "filterable": true }, "unit": "ops" },
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          },
+          "unit": "ops"
+        },
         "overrides": []
       },
-      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (feature_name) (rate(you_intelligence{namespace=\"$namespace\", status=\"error\"}[$__rate_interval]))",
           "format": "table",
           "instant": true,
@@ -365,31 +782,98 @@
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "feature_name": "Feature", "Value": "errors/s" } } }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "feature_name": "Feature",
+              "Value": "errors/s"
+            }
+          }
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "Intelligence feature outcomes",
       "description": "you_intelligence rate by status (ok / error) across all features.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 35
+      },
       "id": 11,
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
-          "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal" } },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "error" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
-          { "matcher": { "id": "byName", "options": "ok" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "error"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ok"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (status) (rate(you_intelligence{namespace=\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"
@@ -398,32 +882,376 @@
     },
     {
       "type": "row",
+      "title": "Internal Stages",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "id": 104,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Per-stage latency p95",
+      "description": "p95 latency of each INTERNAL pipeline stage (stage_latency) \u2014 decode, static_*, meta_*, breach_*, intelligence, common_data. The panel that says WHICH component is slow when api_latency spikes. Crawlers are on the Crawlers row.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "id": 20,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (stage, le) (rate(stage_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Stage error rate (DB/enrich lanes)",
+      "description": "stage_status error rate for the internal lanes that previously had no error signal (static_*, and any stage that reports ok/error). Catches a MySQL/enrich failure that would otherwise show only as a slow/empty response.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 21,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (stage) (rate(stage_status{namespace=\"$namespace\",status=\"error\"}[$__rate_interval])) / clamp_min(sum by (stage) (rate(stage_status{namespace=\"$namespace\"}[$__rate_interval])), 0.0001)",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Third-party Dependencies",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 105,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Third-party API latency p95",
+      "description": "p95 latency per external provider (external_dep_latency): ml_service, enrichdata, hibp, whoisxml, mailboxvalidator, freecharge, airtel, jio, vi. A vendor's line climbing = that dependency is slow.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "id": 22,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (provider, le) (rate(external_dep_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{provider}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Third-party API error rate",
+      "description": "error-fraction per external provider (external_dep_status). Spikes to a vendor = that dependency is failing (5xx / transport / timeout). Business 4xx like Airtel/Jio 'prepaid' are folded to ok so they don't inflate this.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 54
+      },
+      "id": 23,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 5
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (provider) (rate(external_dep_status{namespace=\"$namespace\",status=~\"error|timeout\"}[$__rate_interval])) / clamp_min(sum by (provider) (rate(external_dep_status{namespace=\"$namespace\"}[$__rate_interval])), 0.0001)",
+          "legendFormat": "{{provider}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Third-party outcomes by provider & code",
+      "description": "external_dep_status by provider, status and bounded HTTP code-class (2xx/3xx/4xx/5xx/err).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "id": 24,
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (provider, status, code) (rate(external_dep_status{namespace=\"$namespace\"}[$__rate_interval]))",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "provider": "Provider",
+              "status": "Status",
+              "code": "Code class",
+              "Value": "calls/s"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "row",
       "title": "Token Pool",
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
       "id": 103,
       "panels": []
     },
     {
       "type": "timeseries",
       "title": "Warm tokens in pool per site",
-      "description": "token_pool_size gauge — how many pre-warmed tokens are ready per two-step site. A pool stuck at 0 (e.g. MICROSOFT/QUORA) means every request falls back to inline token generation.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 44 },
+      "description": "token_pool_size gauge \u2014 how many pre-warmed tokens are ready per two-step site. A pool stuck at 0 (e.g. MICROSOFT/QUORA) means every request falls back to inline token generation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
       "id": 12,
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "min": 0,
-          "custom": { "drawStyle": "line", "fillOpacity": 10, "lineWidth": 1, "stepInterval": true },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "stepInterval": true
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": []
       },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "min"], "sortBy": "Last *", "sortDesc": false }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "min"
+          ],
+          "sortBy": "Last *",
+          "sortDesc": false
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "max by (website, kind) (token_pool_size{namespace=\"$namespace\"})",
           "legendFormat": "{{website}}/{{kind}}",
           "refId": "A"
@@ -433,25 +1261,81 @@
     {
       "type": "timeseries",
       "title": "Token generation: success vs failure",
-      "description": "token_pool by status — add_succ (minted a warm token) vs add_fail (generation failed, e.g. upstream 403/parse). Persistent add_fail with no add_succ = that pool can never warm.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 44 },
+      "description": "token_pool by status \u2014 add_succ (minted a warm token) vs add_fail (generation failed, e.g. upstream 403/parse). Persistent add_fail with no add_succ = that pool can never warm.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
       "id": 13,
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
-          "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal" } },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "add_fail" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } } ] },
-          { "matcher": { "id": "byName", "options": "add_succ" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "add_fail"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "add_succ"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (status) (rate(token_pool{namespace=\"$namespace\", status=~\"add_succ|add_fail\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"
@@ -461,18 +1345,43 @@
     {
       "type": "table",
       "title": "Token generation failures by site & class",
-      "description": "token_pool add_fail by website and bounded error class — which pools are failing to warm and why (http_error=403, timeout, other).",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 53 },
+      "description": "token_pool add_fail by website and bounded error class \u2014 which pools are failing to warm and why (http_error=403, timeout, other).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 81
+      },
       "id": 14,
       "fieldConfig": {
-        "defaults": { "custom": { "align": "auto", "filterable": true }, "unit": "ops" },
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          },
+          "unit": "ops"
+        },
         "overrides": []
       },
-      "options": { "showHeader": true, "sortBy": [ { "displayName": "Value", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          {
+            "displayName": "Value",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "topk(20, sum by (website, msg) (rate(token_pool{namespace=\"$namespace\", status=\"add_fail\"}[$__rate_interval])))",
           "format": "table",
           "instant": true,
@@ -480,31 +1389,99 @@
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true }, "renameByName": { "website": "Website", "msg": "Error class", "Value": "fails/s" } } }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "website": "Website",
+              "msg": "Error class",
+              "Value": "fails/s"
+            }
+          }
+        }
       ]
     },
     {
       "type": "timeseries",
       "title": "Pool hit vs inline fallback",
-      "description": "token_pool status found (served from warm pool) vs not_found (pool empty → generated inline on the request path). High not_found = pool not keeping up with demand.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 53 },
+      "description": "token_pool status found (served from warm pool) vs not_found (pool empty \u2192 generated inline on the request path). High not_found = pool not keeping up with demand.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 81
+      },
       "id": 15,
       "fieldConfig": {
         "defaults": {
           "unit": "ops",
-          "custom": { "drawStyle": "line", "fillOpacity": 15, "stacking": { "mode": "normal" } },
-          "color": { "mode": "palette-classic" }
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 15,
+            "stacking": {
+              "mode": "normal"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
         },
         "overrides": [
-          { "matcher": { "id": "byName", "options": "not_found" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } } ] },
-          { "matcher": { "id": "byName", "options": "found" }, "properties": [ { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "not_found"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "found"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
         ]
       },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
           "expr": "sum by (status) (rate(token_pool{namespace=\"$namespace\", status=~\"found|not_found\"}[$__rate_interval]))",
           "legendFormat": "{{status}}",
           "refId": "A"

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sign3labs/go-you/internal/metrics"
 )
 
 // timings collects named stage durations for one request. Concurrency-safe
@@ -26,11 +28,36 @@ type timings struct {
 
 func newTimings() *timings { return &timings{ms: make(map[string]float64)} }
 
-// record stores the elapsed time for a stage under the given name.
+// record stores the elapsed time for a stage under the given name, and — for the
+// bounded set of internal pipeline stages — also emits it to the stage_latency
+// Prometheus histogram so the per-request timing map gets history + percentiles
+// in Grafana. Per-crawler stages (crawl_<SITE>) are excluded: they already have
+// website_latency. The whole-request roll-ups (total, fanout_total) are excluded
+// too — total is api_latency, and fanout_total is a sum, not a component. This
+// keeps stage_latency's label set small and each series a real component.
 func (t *timings) record(name string, d time.Duration) {
 	t.mu.Lock()
 	t.ms[name] = float64(d.Microseconds()) / 1000.0
 	t.mu.Unlock()
+
+	if isStageMetricName(name) {
+		metrics.StageObserve(name, d.Seconds())
+	}
+}
+
+// isStageMetricName reports whether a timing name is one of the bounded internal
+// pipeline stages that should feed stage_latency. Excludes per-crawler timings
+// (crawl_*, on website_latency) and the whole-request roll-ups.
+func isStageMetricName(name string) bool {
+	if strings.HasPrefix(name, "crawl_") {
+		return false
+	}
+	switch name {
+	case "total", "fanout_total":
+		return false
+	default:
+		return true
+	}
 }
 
 // since is sugar for record(name, time.Since(start)).

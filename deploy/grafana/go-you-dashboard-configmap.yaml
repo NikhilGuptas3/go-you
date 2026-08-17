@@ -96,9 +96,9 @@ data:
       },
       "timepicker": {},
       "timezone": "",
-      "title": "go-you · persona service",
+      "title": "go-you \u00b7 persona service",
       "uid": "go-you-persona",
-      "version": 1,
+      "version": 2,
       "weekStart": "",
       "panels": [
         {
@@ -469,7 +469,7 @@ data:
         {
           "type": "timeseries",
           "title": "Per-crawler latency p95",
-          "description": "Which crawler is the tail? website_latency bucketed by website — spots the straggler that sets the response floor.",
+          "description": "Which crawler is the tail? website_latency bucketed by website \u2014 spots the straggler that sets the response floor.",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
@@ -758,7 +758,7 @@ data:
         {
           "type": "table",
           "title": "Intelligence feature errors",
-          "description": "you_intelligence by feature_name where status=error — which derived signals (digital_age, linked_ids, score, prediction) come back {error:true}.",
+          "description": "you_intelligence by feature_name where status=error \u2014 which derived signals (digital_age, linked_ids, score, prediction) come back {error:true}.",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
@@ -902,7 +902,7 @@ data:
         },
         {
           "type": "row",
-          "title": "Token Pool",
+          "title": "Internal Stages",
           "collapsed": false,
           "gridPos": {
             "h": 1,
@@ -910,13 +910,13 @@ data:
             "x": 0,
             "y": 43
           },
-          "id": 103,
+          "id": 104,
           "panels": []
         },
         {
           "type": "timeseries",
-          "title": "Warm tokens in pool per site",
-          "description": "token_pool_size gauge — how many pre-warmed tokens are ready per two-step site. A pool stuck at 0 (e.g. MICROSOFT/QUORA) means every request falls back to inline token generation.",
+          "title": "Per-stage latency p95",
+          "description": "p95 latency of each INTERNAL pipeline stage (stage_latency) \u2014 decode, static_*, meta_*, breach_*, intelligence, common_data. The panel that says WHICH component is slow when api_latency spikes. Crawlers are on the Crawlers row.",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
@@ -926,6 +926,312 @@ data:
             "w": 12,
             "x": 0,
             "y": 44
+          },
+          "id": 20,
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 5
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "histogram_quantile(0.95, sum by (stage, le) (rate(stage_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+              "legendFormat": "{{stage}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Stage error rate (DB/enrich lanes)",
+          "description": "stage_status error rate for the internal lanes that previously had no error signal (static_*, and any stage that reports ok/error). Catches a MySQL/enrich failure that would otherwise show only as a slow/empty response.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 44
+          },
+          "id": 21,
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 5
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum by (stage) (rate(stage_status{namespace=\"$namespace\",status=\"error\"}[$__rate_interval])) / clamp_min(sum by (stage) (rate(stage_status{namespace=\"$namespace\"}[$__rate_interval])), 0.0001)",
+              "legendFormat": "{{stage}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "title": "Third-party Dependencies",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 53
+          },
+          "id": 105,
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Third-party API latency p95",
+          "description": "p95 latency per external provider (external_dep_latency): ml_service, enrichdata, hibp, whoisxml, mailboxvalidator, freecharge, airtel, jio, vi. A vendor's line climbing = that dependency is slow.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 54
+          },
+          "id": 22,
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 5
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "histogram_quantile(0.95, sum by (provider, le) (rate(external_dep_latency_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+              "legendFormat": "{{provider}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "type": "timeseries",
+          "title": "Third-party API error rate",
+          "description": "error-fraction per external provider (external_dep_status). Spikes to a vendor = that dependency is failing (5xx / transport / timeout). Business 4xx like Airtel/Jio 'prepaid' are folded to ok so they don't inflate this.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 12,
+            "y": 54
+          },
+          "id": 23,
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "custom": {
+                "drawStyle": "line",
+                "fillOpacity": 5
+              },
+              "color": {
+                "mode": "palette-classic"
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": [
+                "max",
+                "lastNotNull"
+              ]
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum by (provider) (rate(external_dep_status{namespace=\"$namespace\",status=~\"error|timeout\"}[$__rate_interval])) / clamp_min(sum by (provider) (rate(external_dep_status{namespace=\"$namespace\"}[$__rate_interval])), 0.0001)",
+              "legendFormat": "{{provider}}",
+              "refId": "A"
+            }
+          ]
+        },
+        {
+          "type": "table",
+          "title": "Third-party outcomes by provider & code",
+          "description": "external_dep_status by provider, status and bounded HTTP code-class (2xx/3xx/4xx/5xx/err).",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 8,
+            "w": 24,
+            "x": 0,
+            "y": 63
+          },
+          "id": 24,
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "filterable": true
+              },
+              "unit": "ops"
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "sortBy": [
+              {
+                "displayName": "Value",
+                "desc": true
+              }
+            ]
+          },
+          "targets": [
+            {
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${DS_PROMETHEUS}"
+              },
+              "expr": "sum by (provider, status, code) (rate(external_dep_status{namespace=\"$namespace\"}[$__rate_interval]))",
+              "format": "table",
+              "instant": true,
+              "legendFormat": "",
+              "refId": "A"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true
+                },
+                "renameByName": {
+                  "provider": "Provider",
+                  "status": "Status",
+                  "code": "Code class",
+                  "Value": "calls/s"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "title": "Token Pool",
+          "collapsed": false,
+          "gridPos": {
+            "h": 1,
+            "w": 24,
+            "x": 0,
+            "y": 71
+          },
+          "id": 103,
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Warm tokens in pool per site",
+          "description": "token_pool_size gauge \u2014 how many pre-warmed tokens are ready per two-step site. A pool stuck at 0 (e.g. MICROSOFT/QUORA) means every request falls back to inline token generation.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 12,
+            "x": 0,
+            "y": 72
           },
           "id": 12,
           "fieldConfig": {
@@ -975,7 +1281,7 @@ data:
         {
           "type": "timeseries",
           "title": "Token generation: success vs failure",
-          "description": "token_pool by status — add_succ (minted a warm token) vs add_fail (generation failed, e.g. upstream 403/parse). Persistent add_fail with no add_succ = that pool can never warm.",
+          "description": "token_pool by status \u2014 add_succ (minted a warm token) vs add_fail (generation failed, e.g. upstream 403/parse). Persistent add_fail with no add_succ = that pool can never warm.",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
@@ -984,7 +1290,7 @@ data:
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 44
+            "y": 72
           },
           "id": 13,
           "fieldConfig": {
@@ -1059,7 +1365,7 @@ data:
         {
           "type": "table",
           "title": "Token generation failures by site & class",
-          "description": "token_pool add_fail by website and bounded error class — which pools are failing to warm and why (http_error=403, timeout, other).",
+          "description": "token_pool add_fail by website and bounded error class \u2014 which pools are failing to warm and why (http_error=403, timeout, other).",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
@@ -1068,7 +1374,7 @@ data:
             "h": 9,
             "w": 12,
             "x": 0,
-            "y": 53
+            "y": 81
           },
           "id": 14,
           "fieldConfig": {
@@ -1121,7 +1427,7 @@ data:
         {
           "type": "timeseries",
           "title": "Pool hit vs inline fallback",
-          "description": "token_pool status found (served from warm pool) vs not_found (pool empty → generated inline on the request path). High not_found = pool not keeping up with demand.",
+          "description": "token_pool status found (served from warm pool) vs not_found (pool empty \u2192 generated inline on the request path). High not_found = pool not keeping up with demand.",
           "datasource": {
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
@@ -1130,7 +1436,7 @@ data:
             "h": 9,
             "w": 12,
             "x": 12,
-            "y": 53
+            "y": 81
           },
           "id": 15,
           "fieldConfig": {

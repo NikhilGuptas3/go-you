@@ -191,15 +191,19 @@ func (s *Service) callMLService(ctx context.Context, mlCfg map[string]any, in In
 		req.Header.Set("authorization", auth)
 	}
 	client := &http.Client{Timeout: timeout}
+	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
 		// hey-you: ml_service_counter[tenant, stage, status].
 		metrics.MLServiceCounter.WithLabelValues(in.Tenant, "call", "error").Inc()
+		// Also feed the uniform per-provider third-party metric (0 code = transport err).
+		metrics.ObserveExternal("ml_service", time.Since(start).Seconds(), 0, err)
 		intelLog.Warn("ml_service call failed", "tenant", in.Tenant, "err", err.Error())
 		return map[string]any{}
 	}
 	defer resp.Body.Close()
 	metrics.MLServiceCounter.WithLabelValues(in.Tenant, "call", "ok").Inc()
+	metrics.ObserveExternal("ml_service", time.Since(start).Seconds(), resp.StatusCode, nil)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return map[string]any{}

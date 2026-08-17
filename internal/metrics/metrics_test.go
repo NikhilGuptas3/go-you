@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -124,6 +126,82 @@ func TestBucketTiersMatchPython(t *testing.T) {
 	// ExternalBuckets must start at 0.25 (Python EXTERNAL_BUCKETS).
 	if ExternalBuckets[0] != 0.25 {
 		t.Errorf("ExternalBuckets[0] = %v, want 0.25", ExternalBuckets[0])
+	}
+}
+
+// TestCodeClass pins external_dep_status.code to a bounded 5-value set so the
+// label can never carry a raw HTTP status code.
+func TestCodeClass(t *testing.T) {
+	cases := []struct {
+		code int
+		want string
+	}{
+		{0, "err"}, {-1, "err"},
+		{200, "2xx"}, {204, "2xx"}, {299, "2xx"},
+		{301, "3xx"}, {304, "3xx"},
+		{400, "4xx"}, {403, "4xx"}, {429, "4xx"},
+		{500, "5xx"}, {503, "5xx"},
+	}
+	allowed := map[string]bool{"err": true, "2xx": true, "3xx": true, "4xx": true, "5xx": true}
+	for _, tc := range cases {
+		got := CodeClass(tc.code)
+		if got != tc.want {
+			t.Errorf("CodeClass(%d) = %q, want %q", tc.code, got, tc.want)
+		}
+		if !allowed[got] {
+			t.Errorf("CodeClass produced unbounded label %q", got)
+		}
+	}
+}
+
+// TestObserveExternal confirms the third-party helper derives the right status
+// (ok/error/timeout) and registers both external_dep series.
+func TestObserveExternal(t *testing.T) {
+	ObserveExternal("hibp", 0.2, 200, nil)                          // ok
+	ObserveExternal("whoisxml", 0.3, 500, nil)                      // error (5xx)
+	ObserveExternal("enrichdata", 0.1, 0, context.DeadlineExceeded) // timeout
+	ObserveExternal("ml_service", 0.4, 0, errors.New("dial tcp"))   // error (transport)
+
+	mfs, _ := prometheus.DefaultGatherer.Gather()
+	names := map[string]bool{}
+	statusVals := map[string]bool{}
+	for _, mf := range mfs {
+		names[mf.GetName()] = true
+		if mf.GetName() == "external_dep_status" {
+			for _, m := range mf.GetMetric() {
+				for _, l := range m.GetLabel() {
+					if l.GetName() == "status" {
+						statusVals[l.GetValue()] = true
+					}
+				}
+			}
+		}
+	}
+	if !names["external_dep_latency"] || !names["external_dep_status"] {
+		t.Errorf("external_dep metrics not registered: %v", names)
+	}
+	for _, want := range []string{"ok", "error", "timeout"} {
+		if !statusVals[want] {
+			t.Errorf("external_dep_status missing status=%q (got %v)", want, statusVals)
+		}
+	}
+}
+
+// TestStageLatencyRegistered confirms StageObserve emits the stage_latency
+// histogram with the stage label.
+func TestStageLatencyRegistered(t *testing.T) {
+	StageObserve("intelligence", 0.5)
+	StageObserve("meta_phone", 0.3)
+	StageStatus.WithLabelValues("static_phone", "error").Inc()
+
+	mfs, _ := prometheus.DefaultGatherer.Gather()
+	got := map[string]bool{}
+	for _, mf := range mfs {
+		got[mf.GetName()] = true
+	}
+	if !got["stage_latency"] || !got["stage_status"] {
+		t.Errorf("stage metrics not registered: stage_latency=%v stage_status=%v",
+			got["stage_latency"], got["stage_status"])
 	}
 }
 

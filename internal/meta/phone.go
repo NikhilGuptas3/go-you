@@ -21,7 +21,22 @@ import (
 	"time"
 
 	"golang.org/x/crypto/pbkdf2"
+
+	"github.com/sign3labs/go-you/internal/metrics"
 )
+
+// postpaidMetricStatus normalizes a postpaid-check HTTP status for the
+// external_dep metric. Airtel and Jio return 400 as their NORMAL "this number is
+// prepaid" answer, so a raw 400 would inflate the provider error rate with
+// ordinary prepaid lookups. Collapse any <500 status to 200 (a completed call);
+// only 5xx and transport errors (err != nil, handled by ObserveExternal) count
+// as real provider failures.
+func postpaidMetricStatus(status int) int {
+	if status > 0 && status < 500 {
+		return 200
+	}
+	return status
+}
 
 // ConfigGetter is the subset of appconfig.Fetcher the meta lanes need (the
 // freecharge operator mapping + tpi_global_config). Declared as an interface to
@@ -112,7 +127,9 @@ func (s *PhoneMetaService) freecharge(ctx context.Context, national string) (ope
 		"user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
 	}
 	// Freecharge uses curl_cffi in Python -> Chrome TLS impersonation.
+	start := time.Now()
 	status, respBody, err := s.doTLS(ctx, "POST", "https://www.freecharge.in/api/fulfilment/nosession/fetch/operatorMapping", strings.NewReader(string(body)), headers)
+	metrics.ObserveExternal("freecharge", time.Since(start).Seconds(), status, err)
 	if err != nil || status != 200 {
 		return "", ""
 	}
@@ -219,7 +236,12 @@ func (s *PhoneMetaService) postpaidAirtel(ctx context.Context, national string) 
 	}
 	u := "https://digi-api.airtel.in/airtel-billing/rest/billing/v1/bill/easy/details/fetch?lob=POSTPAID&siNumber=" +
 		url.QueryEscape(national) + "&skipDueAmount=true"
+	start := time.Now()
 	status, _, err := s.doProxy(ctx, "GET", u, nil, headers)
+	// 400 is Airtel's normal "prepaid" answer, not a failure — collapse it to 200
+	// for the metric so the provider error-rate reflects real outages, not prepaid
+	// numbers. The code-class still shows 2xx; only 5xx/transport = error.
+	metrics.ObserveExternal("airtel", time.Since(start).Seconds(), postpaidMetricStatus(status), err)
 	if err != nil {
 		return nil
 	}
@@ -246,7 +268,10 @@ func (s *PhoneMetaService) postpaidJio(ctx context.Context, national string) *bo
 	}
 	u := "https://www.jio.com/api/jio-paybill-service/paybill/submitDetail/" + url.PathEscape(national) + "/" +
 		rand3digits() + "?source=undefined&rechargeType=fetchBill&serviceType=mobility"
+	start := time.Now()
 	status, _, err := s.doProxy(ctx, "GET", u, nil, headers)
+	// 400 is Jio's normal "prepaid" answer (see postpaidMetricStatus).
+	metrics.ObserveExternal("jio", time.Since(start).Seconds(), postpaidMetricStatus(status), err)
 	if err != nil {
 		return nil
 	}
@@ -273,7 +298,9 @@ func (s *PhoneMetaService) postpaidVI(ctx context.Context, national string) *boo
 		"Referer": "https://www.myvi.in/prepaid/online-mobile-recharge", "Sec-Fetch-Dest": "empty",
 		"Sec-Fetch-Mode": "cors", "Sec-Fetch-Site": "same-origin", "X-Requested-With": "XMLHttpRequest",
 	}
+	start := time.Now()
 	status, respBody, err := s.doProxy(ctx, "POST", "https://www.myvi.in/bin/selected/prepaidrechargevalidation", strings.NewReader(data), headers)
+	metrics.ObserveExternal("vi", time.Since(start).Seconds(), status, err)
 	if err != nil || status != 200 {
 		return nil
 	}

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
 )
 
@@ -129,7 +130,9 @@ type hibpBreach struct {
 func (s *Service) haveibeenpwned(ctx context.Context, email, apiKey string) ([]model.Breach, string) {
 	u := "https://haveibeenpwned.com/api/v3/breachedaccount/" +
 		url.PathEscape(email) + "?truncateResponse=false"
+	start := time.Now()
 	status, body, err := doHTTP(ctx, s.timeout, "GET", u, map[string]string{"hibp-api-key": apiKey})
+	metrics.ObserveExternal("hibp", time.Since(start).Seconds(), status, err)
 	if err != nil {
 		return []model.Breach{}, "error"
 	}

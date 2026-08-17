@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sign3labs/go-you/internal/metrics"
 )
 
 // EmailMetaService assembles email_meta's domain-intelligence V2 block, ported
@@ -103,7 +105,9 @@ func (s *EmailMetaService) isDisposable(ctx context.Context, domain string) *boo
 	apiKey := s.tpiString("mail_box_validator", "api_key")
 	u := "https://api.mailboxvalidator.com/v2/email/disposable?email=" +
 		url.QueryEscape("test-sign3@"+domain) + "&key=" + url.QueryEscape(apiKey) + "&format=json"
+	start := time.Now()
 	status, body, err := doHTTP(ctx, s.proxyURL, s.timeout, false, "GET", u, nil, map[string]string{})
+	metrics.ObserveExternal("mailboxvalidator", time.Since(start).Seconds(), status, err)
 	if err != nil || status != 200 {
 		return nil
 	}
@@ -156,7 +160,9 @@ func (s *EmailMetaService) whois(ctx context.Context, domain string) whoisInfo {
 	}
 	u := "https://www.whoisxmlapi.com/whoisserver/WhoisService?apiKey=" + url.QueryEscape(apiKey) +
 		"&domainName=" + url.QueryEscape(domain) + "&outputFormat=JSON"
+	start := time.Now()
 	status, body, err := doHTTP(ctx, nil, s.timeout, false, "GET", u, nil, map[string]string{})
+	metrics.ObserveExternal("whoisxml", time.Since(start).Seconds(), status, err)
 	if err != nil || status != 200 {
 		return whoisInfo{}
 	}

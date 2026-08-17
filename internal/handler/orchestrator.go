@@ -189,6 +189,7 @@ func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone
 			staticStart := time.Now()
 			doc, err := o.deps.Static.GetInorganic(ctx, staticID)
 			tm.since("static_phone", staticStart)
+			metrics.StageStatus.WithLabelValues("static_phone", stageStatusFor(err)).Inc()
 			if err == nil {
 				static = doc
 			}
@@ -287,6 +288,7 @@ func (o *Orchestrator) buildEmailSection(ctx context.Context, email string, tm *
 			staticStart := time.Now()
 			doc, err := o.deps.Static.GetInorganic(ctx, email)
 			tm.since("static_email", staticStart)
+			metrics.StageStatus.WithLabelValues("static_email", stageStatusFor(err)).Inc()
 			if err == nil {
 				static = doc
 			}
@@ -423,6 +425,17 @@ func (o *Orchestrator) applyIntelligence(ctx context.Context, req *model.Persona
 			metrics.YouIntelligence.WithLabelValues(tenantID, "prediction", "ok").Inc()
 		}
 	}
+}
+
+// stageStatusFor maps a stage's terminal error to the bounded stage_status
+// status label. Used by the internal DB lanes (static_*) that previously had no
+// error signal — a failing MySQL fetch now increments stage_status{status=error}
+// so Grafana shows the broken stage, not just a slow/empty response.
+func stageStatusFor(err error) string {
+	if err != nil {
+		return "error"
+	}
+	return "ok"
 }
 
 // recordIntelFeatures emits one you_intelligence counter per ml_service feature

@@ -40,6 +40,7 @@ import (
 
 	"github.com/sign3labs/go-you/internal/appconfig"
 	"github.com/sign3labs/go-you/internal/logger"
+	"github.com/sign3labs/go-you/internal/metrics"
 	"github.com/sign3labs/go-you/internal/model"
 	"github.com/sign3labs/go-you/internal/personacache"
 )
@@ -308,14 +309,17 @@ func (s *Service) callCheck(ctx context.Context, cfg enrichConfig, serviceID, ch
 
 	// Per-check timeout: Python uses timeout-0.7 for the request. The client's
 	// own Timeout is the ceiling; ctx cancellation still applies (leaf timeout).
+	start := time.Now()
 	resp, err := s.http.Do(req)
 	if err != nil {
+		metrics.ObserveExternal("enrichdata", time.Since(start).Seconds(), 0, err)
 		if debugCommon() {
 			cdLog.Debug("[DEBUG_COMMON] http error", "check", check, "err", err.Error())
 		}
 		return nil
 	}
 	defer resp.Body.Close()
+	metrics.ObserveExternal("enrichdata", time.Since(start).Seconds(), resp.StatusCode, nil)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil
