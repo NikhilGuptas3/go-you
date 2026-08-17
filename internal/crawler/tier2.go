@@ -63,12 +63,47 @@ var (
 	msHpgid   = regexp.MustCompile(`"hpgid":(.*?),`)
 )
 
+// msTokenAttempts is how many times GenerateToken re-fetches the authorize page
+// looking for one that carries all 7 session tokens. Microsoft serves two page
+// variants at random: a full login page (all 7 tokens) and a smaller account-
+// picker interstitial that omits sFT/sCtx. Measured live at ~50/50, so a single
+// fetch fails half the time. Retrying makes the pool refill (and the inline
+// fallback) reliable: P(all fail) = 0.5^n → 4 attempts ≈ 94%, matching what the
+// Python source never did (it single-shots and inherits the ~50% failure).
+const msTokenAttempts = 4
+
 // GenerateToken performs step 1: GET the authorize page, scrape the 7 session
 // tokens from the HTML, and capture the cookies the page set. All are
 // identifier-agnostic, so the pool can hand this token to any lookup. The cookie
 // string is carried in the token (not left in a jar) so a pooled token works on
 // a fresh step-2 client.
+//
+// Because Microsoft randomly serves a token-less interstitial ~50% of the time,
+// the fetch+scrape is retried up to msTokenAttempts times; the first page that
+// yields all 7 tokens wins. Each attempt uses a fresh client+UA (an independent
+// coin flip). ctx cancellation aborts the loop.
 func (c *Microsoft) GenerateToken(ctx context.Context, proxyURL *url.URL) (map[string]string, error) {
+	var lastErr error
+	for attempt := 0; attempt < msTokenAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		tok, err := c.generateTokenOnce(ctx, proxyURL)
+		if err == nil {
+			return tok, nil
+		}
+		lastErr = err
+		// Only the token-less-page case is worth retrying; a transport/status
+		// error (proxy down, non-200) won't improve by re-fetching immediately.
+		if err.Error() != "microsoft: token parsing failed" {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// generateTokenOnce is a single authorize-page fetch + scrape attempt.
+func (c *Microsoft) generateTokenOnce(ctx context.Context, proxyURL *url.URL) (map[string]string, error) {
 	ua := randomUA()
 	client := newHTTPClientJar(proxyURL, c.timeout, TLSDefault) // Python: default requests, no impersonation
 
