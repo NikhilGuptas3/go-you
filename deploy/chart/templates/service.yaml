@@ -4,9 +4,10 @@ metadata:
   name: {{ .Values.deploymentName }}
   labels:
     app: {{ .Values.deploymentName }}
-  annotations:
-    prometheus.io/scrape: 'true'
-    prometheus.io/port: '5000'
+  # No prometheus.io/* annotations: scraping is via the ServiceMonitor
+  # (job="go-you"). Annotation-based scrape would ALSO pull this target under
+  # job="kubernetes_pods", storing every series twice and double-counting in
+  # dashboard sum()/rate() queries. Keep a single scrape path.
 spec:
   # ClusterIP only: no public ingress. Reach it with
   #   kubectl port-forward -n go-you-poc svc/go-you 8080:80

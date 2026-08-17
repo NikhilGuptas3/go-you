@@ -17,10 +17,11 @@ spec:
     metadata:
       labels:
         app: {{ .Values.deploymentName }}
-      annotations:
-        prometheus.io/scrape: 'true'
-        prometheus.io/port: '5000'
-        prometheus.io/path: '/metrics'
+      # No prometheus.io/* scrape annotations: the ServiceMonitor
+      # (templates/servicemonitor.yaml, job="go-you") is the single scrape path.
+      # Annotation-based scraping would ALSO pull this pod under
+      # job="kubernetes_pods", double-storing every series and double-counting in
+      # dashboard sum()/rate() queries.
     spec:
       containers:
         - name: go-you
