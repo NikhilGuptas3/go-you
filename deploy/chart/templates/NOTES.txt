@@ -1,0 +1,42 @@
+go-you ({{ .Chart.AppVersion }}) installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Workload:
+  Deployment/{{ .Values.deploymentName }}   ({{ .Values.replicaCount }} replica{{ if ne (int .Values.replicaCount) 1 }}s{{ end }}, image {{ .Values.image.repository }}:{{ .Values.image.tag }})
+  Service/{{ .Values.deploymentName }}       ClusterIP, port 80 -> 5000 (name: http)
+
+1. Check the pod is Ready:
+     kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ .Values.deploymentName }}
+
+2. Reach the persona API:
+{{- if .Values.ingress.enabled }}
+   Ingress ({{ .Values.ingress.className }}) is enabled. Once DNS points at the ingress controller:
+   {{- range .Values.ingress.hosts }}
+     https://{{ .host }}/v1/persona
+   {{- end }}
+   Ingress address (may take a minute to populate):
+     kubectl -n {{ .Release.Namespace }} get ingress {{ .Values.deploymentName }}
+{{- else }}
+   Ingress is disabled. Reach it in-cluster via port-forward:
+     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Values.deploymentName }} 8080:80
+     curl -s localhost:8080/v1/persona -XPOST -d '{...}'
+{{- end }}
+
+3. Metrics:
+{{- if .Values.serviceMonitor.enabled }}
+   A ServiceMonitor (label release={{ .Values.serviceMonitor.releaseLabel }}) scrapes /metrics every {{ .Values.serviceMonitor.interval }}.
+   Confirm the new observability series after some traffic:
+     kubectl -n {{ .Release.Namespace }} exec deploy/{{ .Values.deploymentName }} -- \
+       wget -qO- localhost:5000/metrics | grep -E 'stage_latency|external_dep_latency'
+{{- else }}
+   ServiceMonitor is disabled (serviceMonitor.enabled=false). /metrics is still
+   served on port 5000 if you want to scrape it another way.
+{{- end }}
+
+4. The Grafana dashboard is NOT part of this release. Apply it in the Grafana
+   namespace (sidecar auto-loads label grafana_dashboard="1"):
+     kubectl apply -n <grafana-namespace> -f deploy/grafana/go-you-dashboard-configmap.yaml
+
+Reminder: this release does NOT manage the go-you-secrets Secret (MYSQL_DSN,
+PROXY_URL, AWS creds, …). Apply/patch it separately, and guard the AWS keys —
+a full `kubectl apply` of secret.yaml replaces the whole Secret and wipes the
+patched-in AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY.

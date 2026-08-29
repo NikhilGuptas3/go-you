@@ -29,3 +29,32 @@ serviceMonitor:
   releaseLabel: prometheus   # MUST match the Prometheus CR's serviceMonitorSelector
   interval: 30s
   scrapeTimeout: 10s
+
+# Ingress — routes an external host to the ClusterIP Service (port 80 -> 5000)
+# via the cluster's shared nginx ingress class. Only the persona API is exposed;
+# /metrics, /healthz and /readyz are intentionally NOT routed (metrics are
+# scraped in-cluster by the ServiceMonitor; probes are kubelet-only).
+ingress:
+  enabled: true
+  # The cluster's shared ingress class (kubectl get ingressclass ->
+  # internal-shared, controller k8s.io/internal-shared). NOT "nginx".
+  className: internal-shared
+  annotations:
+    # Persona payloads and crawler fan-out can exceed the ingress defaults.
+    # NOTE: these nginx.ingress.kubernetes.io/* annotations are honored only if
+    # internal-shared is an ingress-nginx controller. If it is a different
+    # controller (e.g. Traefik/HAProxy), swap these for that controller's
+    # equivalents or drop them. Confirm with the platform team.
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+  hosts:
+    - host: go.you.sign3.in
+      paths:
+        - path: /
+          pathType: Prefix
+  # TLS (optional): uncomment and point at a cert Secret (e.g. cert-manager).
+  # tls:
+  #   - hosts:
+  #       - go.you.sign3.in
+  #     secretName: go-you-tls

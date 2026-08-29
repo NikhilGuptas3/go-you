@@ -1,0 +1,42 @@
+{{- if .Values.ingress.enabled -}}
+# Ingress for go-you, gated on ingress.enabled (default off — the POC was
+# port-forward only). Routes an external host to the ClusterIP Service on its
+# named "http" port (Service port 80 -> containerPort 5000). Uses the cluster's
+# shared ingress class via ingress.className.
+#
+# Only the persona API is exposed. /metrics, /healthz, /readyz are deliberately
+# NOT routed here — metrics are scraped in-cluster by the ServiceMonitor and the
+# probes are used by the kubelet, not external clients — so add explicit paths
+# only if you intend to expose them.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.deploymentName }}
+  labels:
+    app: {{ .Values.deploymentName }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ $.Values.deploymentName }}
+                port:
+                  name: http
+          {{- end }}
+    {{- end }}
+{{- end }}

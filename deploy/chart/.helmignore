@@ -1,0 +1,10 @@
+# Patterns to ignore when packaging the chart (helm package / helm install).
+.DS_Store
+.git/
+.gitignore
+*.tmp
+*.bak
+*.orig
+*~
+# Env-specific values are passed with -f, not bundled:
+values-*.yaml

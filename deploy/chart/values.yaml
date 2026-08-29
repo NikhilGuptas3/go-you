@@ -1,0 +1,62 @@
+# Base defaults for the go-you chart. These make the chart installable on their
+# own (helm install go-you ./deploy/chart) with no --set required. Environment
+# overlays layer on top: for the prod cluster use
+#   helm upgrade --install go-you ./deploy/chart -f values-prod.yaml
+# values-prod.yaml overrides only what differs (image repo, resources, ingress
+# host, ServiceMonitor). Any key here that an overlay does not set keeps the
+# default below.
+
+# Object name shared by the Deployment, Service, ServiceMonitor and Ingress
+# (metadata.name and the app: selector label). One value keeps them consistent.
+deploymentName: go-you
+
+# NAMESPACE env for the ConfigFetcher override table (configs_<ns>). Keep "you"
+# so go-you reads the BASE configs table cleanly; setting it to the deploy
+# namespace (e.g. go-you-poc) makes it look for configs_go-you-poc, which does
+# not exist -> non-fatal override-lookup errors + log noise. Only change this if
+# a per-namespace configs_<ns> table actually exists.
+configNamespace: you
+
+replicaCount: 1
+
+image:
+  # Overridden per-env; values-prod.yaml points this at the prod ECR repo and
+  # push-goyou.sh sets image.tag=<git-sha>.
+  repository: go-you
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Per-crawler HTTP timeout (ms). 5s: Instagram-via-residential-proxy needs > 2s.
+crawlerHttpTimeoutMs: "5000"
+
+# Conservative defaults; values-prod.yaml bumps these (the 128Mi pod OOMKilled
+# at ~9 QPS in the in-cluster loadtest).
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Prometheus Operator scraping. Disabled by default so the chart installs on a
+# cluster with no Prometheus Operator (a ServiceMonitor CRD that doesn't exist
+# would fail the apply). values-prod.yaml enables it.
+serviceMonitor:
+  enabled: false
+  releaseLabel: prometheus   # MUST match the Prometheus CR's serviceMonitorSelector
+  interval: 30s
+  scrapeTimeout: 10s
+
+# Ingress. Disabled by default (the POC was port-forward only); values-prod.yaml
+# enables it and sets the real host + class.
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: go-you.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
