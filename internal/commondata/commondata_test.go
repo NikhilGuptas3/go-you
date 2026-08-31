@@ -121,7 +121,7 @@ func ycFrom(t *testing.T, inner string) *appconfig.YouConfiguration {
 
 func reqPhoneEmailName() *model.PersonaRequest {
 	return &model.PersonaRequest{
-		Phone: &model.Phone{CountryCode: "91", Number: "7596845338"},
+		Phone: "7596845338",
 		Email: "a@b.com",
 		Name:  "Nikhil",
 	}
@@ -245,7 +245,7 @@ func TestFetch_BodyPresentOnly(t *testing.T) {
 	d := &capturingDoer{}
 	s := svcWith(enabledRow(), d, nil)
 	yc := ycFrom(t, `{"common_intelligence": {"enabled": true, "demat_check": true}}`)
-	req := &model.PersonaRequest{Phone: &model.Phone{CountryCode: "91", Number: "999"}}
+	req := &model.PersonaRequest{Phone: "999"}
 	_ = s.Fetch(context.Background(), req, yc)
 	var body map[string]any
 	_ = json.Unmarshal([]byte(d.bodies[0]), &body)

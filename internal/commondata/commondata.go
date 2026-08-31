@@ -343,11 +343,10 @@ func (s *Service) callCheck(ctx context.Context, cfg enrichConfig, serviceID, ch
 	return parsed
 }
 
-// reqFields extracts the phone (bare national number), email, and name strings
-// used for the payload and cache key.
+// reqFields extracts the phone, email, and name strings used for the enrichdata
+// payload and cache key. phone is the RAW request string (hey-you vintage.py
+// sends payload["phone"] = you_request.phone verbatim — the flat string as the
+// client sent it, e.g. "9607639515", not the parsed international form).
 func reqFields(req *model.PersonaRequest) (phone, email, name string) {
-	if req.Phone != nil {
-		phone = req.Phone.Number
-	}
-	return phone, req.Email, req.Name
+	return req.Phone, req.Email, req.Name
 }

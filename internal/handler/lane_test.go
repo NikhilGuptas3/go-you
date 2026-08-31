@@ -90,7 +90,7 @@ func ycCaching(t *testing.T, on bool) *appconfig.YouConfiguration {
 
 func newState(yc *appconfig.YouConfiguration) *laneState {
 	return &laneState{
-		req:      &model.PersonaRequest{Phone: &model.Phone{CountryCode: "91", Number: "9999999999"}},
+		req:      &model.PersonaRequest{Phone: "9999999999"},
 		yc:       yc,
 		tenantID: "t1",
 		tm:       newTimings(),

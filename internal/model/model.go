@@ -12,18 +12,18 @@
 // response_mapper.py:182) drops nulls/empties; omitempty here mirrors that.
 package model
 
-// Phone mirrors the Python PhoneNumber payload. The Python side accepts a phone
-// as an object with a country code and number.
-type Phone struct {
-	CountryCode string `json:"country_code"`
-	Number      string `json:"number"`
-}
-
 // PersonaRequest is the subset of the Python request body go-you supports.
 // Everything else (pan_number, gst_number, device_id, face-match, ...) is out of
 // scope and simply ignored if present.
+//
+// Phone is a FLAT STRING, matching hey-you's payload (set_you_request reads
+// json_request["phone"] as a string and validation.isValidPhone parses it with
+// phonenumbers.parse(phone, "IN")). Accepts "+91...", "0091...", "091...",
+// "091-..." or a bare 10-digit "[6-9]\d{9}"; the country code is derived (India
+// default), not sent by the client. An empty/invalid phone yields no phone
+// section (isValidPhone -> False in Python).
 type PersonaRequest struct {
-	Phone *Phone `json:"phone,omitempty"`
+	Phone string `json:"phone,omitempty"`
 	Email string `json:"email,omitempty"`
 	Name  string `json:"name,omitempty"`
 	// Timeout is a per-request override in seconds (Python: request["timeout"]).

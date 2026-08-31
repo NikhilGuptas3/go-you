@@ -162,9 +162,11 @@ func (o *Orchestrator) runCrawlers(ctx context.Context, kind crawler.Kind, ident
 	return o.deps.Runner.RunSites(ctx, kind, identifier, sites)
 }
 
-// buildPhoneSection runs the phone crawlers and phone meta concurrently.
-func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone *model.Phone, tm *timings, sites []string, yc *appconfig.YouConfiguration) *model.Section {
-	identifier := normalizePhone(phone.CountryCode, phone.Number)
+// buildPhoneSection runs the phone crawlers and phone meta concurrently. phone
+// is the raw request string (e.g. "9607639515" or "+919607639515"); it is
+// normalized to the international form here (parsePhone, India default).
+func (o *Orchestrator) buildPhoneSection(ctx context.Context, phone string, tm *timings, sites []string, yc *appconfig.YouConfiguration) *model.Section {
+	identifier := parsePhone(phone)
 
 	var (
 		results   []crawler.Result
@@ -384,7 +386,7 @@ func (o *Orchestrator) applyIntelligence(ctx context.Context, req *model.Persona
 	delete(youResponse, "common_data")
 
 	out := o.deps.Intel.Run(ctx, intelligence.Input{
-		HasPhone: req.Phone != nil,
+		HasPhone: parsePhone(req.Phone) != "",
 		HasEmail: req.Email != "",
 		// Tenant is the authenticated tenant username (tenantapp.id), matching
 		// Python's payload["tenant"] = request_context.tenant_app[0]

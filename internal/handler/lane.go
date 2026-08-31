@@ -85,7 +85,10 @@ type phoneLane struct{}
 func (phoneLane) Name() string { return "phone" }
 
 func (phoneLane) Gate(_ *Orchestrator, st *laneState) bool {
-	return st.req.Phone != nil
+	// Only run the phone lane when the flat phone string parses to a valid
+	// Indian number (hey-you: isValidPhone(...) truthy). A present-but-invalid
+	// phone is treated as absent, matching the Python behaviour.
+	return parsePhone(st.req.Phone) != ""
 }
 
 func (phoneLane) Run(ctx context.Context, o *Orchestrator, st *laneState) {

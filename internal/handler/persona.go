@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -112,7 +113,7 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 		personaLog.Info("persona handled",
 			"rid", requestID, "tenant", tenantID, "status", status,
 			"took", roundTo(took.Seconds(), 3),
-			"phone", req.Phone != nil, "email", req.Email != "")
+			"phone", req.Phone != "", "email", req.Email != "")
 	}()
 
 	tm := newTimings()
@@ -125,7 +126,7 @@ func (h *Persona) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tm.since("decode", decodeStart)
-	if req.Phone == nil && req.Email == "" {
+	if strings.TrimSpace(req.Phone) == "" && req.Email == "" {
 		status = http.StatusBadRequest
 		personaLog.Warn("missing identifier", "rid", requestID, "tenant", tenantID, "reason", "phone or email required")
 		writeError(w, status, requestID, "phone or email required")
@@ -370,20 +371,30 @@ func crawlerStatus(res crawler.Result) string {
 	return "failed"
 }
 
-// normalizePhone returns the international form "+<cc><number>" the phone
-// spiders expect, tolerating inputs that already carry a leading '+'.
-func normalizePhone(countryCode, number string) string {
-	cc := strings.TrimPrefix(strings.TrimSpace(countryCode), "+")
-	num := strings.TrimSpace(number)
-	// If the number already starts with '+', assume it's fully qualified.
-	if strings.HasPrefix(num, "+") {
-		return num
+// phoneRegex mirrors hey-you's validation.regex_phone
+//   ^(?:(?:\+|0{0,2})91(\s*[\-]\s*)?|[0]?)?[6789]\d{9}$
+// It accepts the Indian-number forms the Python side accepts: an optional
+// "+91"/"91"/"0091"/"091"/"091-" (or a lone leading "0") prefix, then a
+// 10-digit national number starting 6/7/8/9. Anything else is invalid.
+var phoneRegex = regexp.MustCompile(`^(?:(?:\+|0{0,2})91(?:\s*-\s*)?|0?)?([6789]\d{9})$`)
+
+// parsePhone validates and normalizes a FLAT phone string exactly like hey-you's
+// validation.isValidPhone (phonenumbers.parse(phone, "IN")): it strips any
+// +91/91/0091/091 prefix and returns the international form "+91<national>".
+// Returns "" when the input is empty or not a valid Indian mobile number, so the
+// caller drops the phone section (isValidPhone -> False in Python). The country
+// code is India (91) by default — the client sends only the number, not a code.
+func parsePhone(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
 	}
-	// If the number already starts with the country code, don't double it.
-	if cc != "" && strings.HasPrefix(num, cc) {
-		return "+" + num
+	m := phoneRegex.FindStringSubmatch(s)
+	if m == nil {
+		return ""
 	}
-	return "+" + cc + num
+	// m[1] is the 10-digit national number ([6-9]\d{9}); prepend the India code.
+	return "+91" + m[1]
 }
 
 // toStrippedMap marshals v to JSON then back to a map, dropping nil values

@@ -127,7 +127,7 @@ func wrapSection(sec *model.Section, kind string) *model.PersonaResponse {
 
 func (phoneLane) cacheKind() string { return "phone" }
 func (phoneLane) loginID(st *laneState) string {
-	return normalizePhone(st.req.Phone.CountryCode, st.req.Phone.Number)
+	return parsePhone(st.req.Phone)
 }
 func (phoneLane) getSection(resp *model.PersonaResponse) *model.Section { return resp.PhoneData }
 func (phoneLane) setSection(resp *model.PersonaResponse, sec *model.Section) {
