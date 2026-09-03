@@ -372,7 +372,9 @@ func crawlerStatus(res crawler.Result) string {
 }
 
 // phoneRegex mirrors hey-you's validation.regex_phone
-//   ^(?:(?:\+|0{0,2})91(\s*[\-]\s*)?|[0]?)?[6789]\d{9}$
+//
+//	^(?:(?:\+|0{0,2})91(\s*[\-]\s*)?|[0]?)?[6789]\d{9}$
+//
 // It accepts the Indian-number forms the Python side accepts: an optional
 // "+91"/"91"/"0091"/"091"/"091-" (or a lone leading "0") prefix, then a
 // 10-digit national number starting 6/7/8/9. Anything else is invalid.

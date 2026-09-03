@@ -141,28 +141,21 @@ const (
 )
 
 // newHTTPClient builds a client bound to a single proxy (or direct if nil) with
-// the per-request timeout, using Go's stock TLS stack. A fresh client per call
-// keeps proxy selection independent, matching Python's per-request proxy
-// resolution. Crawlers that need Chrome impersonation call newHTTPClientTLS
-// with TLSChrome instead.
+// the per-request timeout, using Go's stock TLS stack. Proxy selection stays
+// per-call (matching Python's per-request proxy resolution); the underlying
+// transport is SHARED per (proxy, mode) so the proxy connection pool is reused
+// across crawls (see transport_pool.go). Crawlers that need Chrome impersonation
+// call newHTTPClientTLS with TLSChrome instead.
 func newHTTPClient(proxyURL *url.URL, timeout time.Duration) *http.Client {
 	return newHTTPClientTLS(proxyURL, timeout, TLSDefault)
 }
 
 // newHTTPClientTLS is newHTTPClient with an explicit TLS fingerprint mode.
-// TLSChrome / TLSSafari swap in the uTLS round-tripper (newImpersonatingTransport)
-// so curl_cffi-impersonating sites are not blocked; the crawlers stay unchanged
-// and only declare which mode they need.
+// TLSChrome / TLSSafari use the uTLS round-tripper so curl_cffi-impersonating
+// sites are not blocked; the crawlers stay unchanged and only declare which mode
+// they need. The returned *http.Client is cheap and per-call, but its transport
+// is the long-lived shared one for (proxyURL, mode), so connections pool and the
+// proxy CONNECT+TLS handshake is amortized instead of re-paid every request.
 func newHTTPClientTLS(proxyURL *url.URL, timeout time.Duration, mode TLSMode) *http.Client {
-	switch mode {
-	case TLSChrome:
-		return &http.Client{Transport: newImpersonatingTransport(proxyURL, helloChrome), Timeout: timeout}
-	case TLSSafari:
-		return &http.Client{Transport: newImpersonatingTransport(proxyURL, helloSafari), Timeout: timeout}
-	}
-	transport := &http.Transport{}
-	if proxyURL != nil {
-		transport.Proxy = http.ProxyURL(proxyURL)
-	}
-	return &http.Client{Transport: transport, Timeout: timeout}
+	return &http.Client{Transport: sharedTransport(proxyURL, mode), Timeout: timeout}
 }

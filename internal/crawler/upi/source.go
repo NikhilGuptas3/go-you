@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
@@ -87,14 +88,51 @@ func errString(err error) string {
 
 // --- shared HTTP for UPI sources ---
 
-// httpClient builds a proxy-aware client with the given timeout (stock TLS;
-// UPI sources are not JA3-fingerprinted in the sources we port).
+// UPI transport reuse. Like the main crawler package (see
+// crawler/transport_pool.go), UPI sources used to build a fresh *http.Transport
+// per request, re-paying the proxy CONNECT + TLS handshake every time. Cache one
+// long-lived transport per proxy so the tunnel is reused across VPA probes (a
+// single persona fans out many UPI probes through the same proxy).
+const (
+	upiMaxIdleConns        = 128
+	upiMaxIdleConnsPerHost = 64
+	upiIdleConnTimeout     = 90 * time.Second
+)
+
+var (
+	upiTransportMu    sync.Mutex
+	upiTransportCache = map[string]*http.Transport{}
+)
+
+// httpClient builds a proxy-aware client with the given timeout (stock TLS; UPI
+// sources are not JA3-fingerprinted in the sources we port). The *http.Client is
+// per-call but its transport is shared per proxy, so connections pool.
 func httpClient(proxyURL *url.URL, timeout time.Duration) *http.Client {
-	tr := &http.Transport{}
+	return &http.Client{Transport: sharedUPITransport(proxyURL), Timeout: timeout}
+}
+
+// sharedUPITransport returns the long-lived transport for proxyURL, building it
+// once. A nil proxy (direct) is keyed by the empty string.
+func sharedUPITransport(proxyURL *url.URL) *http.Transport {
+	key := ""
+	if proxyURL != nil {
+		key = proxyURL.String()
+	}
+	upiTransportMu.Lock()
+	defer upiTransportMu.Unlock()
+	if tr, ok := upiTransportCache[key]; ok {
+		return tr
+	}
+	tr := &http.Transport{
+		MaxIdleConns:        upiMaxIdleConns,
+		MaxIdleConnsPerHost: upiMaxIdleConnsPerHost,
+		IdleConnTimeout:     upiIdleConnTimeout,
+	}
 	if proxyURL != nil {
 		tr.Proxy = http.ProxyURL(proxyURL)
 	}
-	return &http.Client{Transport: tr, Timeout: timeout}
+	upiTransportCache[key] = tr
+	return tr
 }
 
 // do sends a request and returns status + body. body may be nil.

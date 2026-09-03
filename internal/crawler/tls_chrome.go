@@ -47,6 +47,14 @@ func (h helloID) name() string {
 // targets is handled by the transport).
 func newImpersonatingTransport(proxyURL *url.URL, hello helloID) http.RoundTripper {
 	t := &http.Transport{
+		// Pool sizing matches the stock transport (see transport_pool.go): the
+		// runner fans out ~40 crawlers through one proxy, so the default
+		// MaxIdleConnsPerHost of 2 would evict idle tunnels immediately and defeat
+		// reuse. This transport is cached and long-lived (sharedTransport), so its
+		// idle connections survive between crawls.
+		MaxIdleConns:        maxIdleConns,
+		MaxIdleConnsPerHost: maxIdleConnsPerHost,
+		IdleConnTimeout:     idleConnTimeout,
 		DialTLSContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialImpersonatingTLS(ctx, network, addr, hello)
 		},
